@@ -7,8 +7,10 @@ A Python application for power system state estimation using the pandapower libr
 - **IEEE 9-Bus Grid Model**: Creates standard IEEE 9-bus test system
 - **Measurement Simulation**: Generates realistic voltage and power flow measurements with configurable noise levels
 - **State Estimation**: Performs weighted least squares state estimation using pandapower
+- **Observability Analysis**: Tests system observability and identifies critical measurements
 - **Comprehensive Results**: Displays results in both tabular and graphical formats
 - **Error Analysis**: Provides detailed statistical analysis of estimation accuracy
+- **Noise-Free Mode**: Perfect measurements for algorithm validation and testing
 
 ## Requirements
 
@@ -88,27 +90,43 @@ python grid_state_estimator.py --compare
 
 # Quick demonstration
 python demo_modes.py
+
+# Test observability with different measurement scenarios
+python test_observability.py
 ```
 
 The application will:
 1. Create an IEEE 9-bus power system model
-2. Generate 45 measurements with 2% noise level
-3. Perform state estimation
-4. Display comprehensive results including:
+2. Generate 45 measurements with configurable noise level
+3. Perform observability analysis
+4. Run state estimation  
+5. Display comprehensive results including:
+   - Observability assessment and critical measurement analysis
    - Bus voltage magnitudes and angles comparison
-   - Line power flows (active and reactive)
-   - Measurement summary table
-   - Visualization plots
-   - Statistical error analysis
+   - Line power flows (active and reactive)  
+   - Measurement comparison tables (Load Flow vs Measured vs Estimated)
+   - Visualization plots with error analysis
+   - Statistical performance metrics
 
 ## Application Structure
 
 ### GridStateEstimator Class
 
 - `create_ieee9_grid()`: Creates the IEEE 9-bus test system with buses, lines, generators, and loads
-- `simulate_measurements()`: Generates noisy measurements for voltage magnitudes and power flows
+- `simulate_measurements(noise_level)`: Generates measurements with configurable noise (0.0 = perfect, >0.0 = noisy)
+- `test_observability()`: Analyzes system observability, measurement redundancy, and critical measurements
 - `run_state_estimation()`: Performs weighted least squares state estimation
 - `show_results()`: Displays comprehensive results in tabular and graphical formats
+
+### Observability Analysis
+
+The application performs comprehensive observability testing:
+
+- **Measurement Redundancy**: Ratio of measurements to state variables
+- **Coverage Analysis**: Percentage of buses with direct or indirect measurements  
+- **Critical Measurement Detection**: Identifies single points of failure
+- **Measurement Distribution**: Analyzes voltage vs power flow measurement balance
+- **Network Connectivity**: Ensures adequate measurement distribution across the network
 
 ### Grid Model Details
 
@@ -135,9 +153,10 @@ The application provides:
 - Error distribution charts
 
 ### Typical Performance
-- Mean voltage magnitude error: ~0.5%
-- Mean voltage angle error: ~0.03°
-- Convergence: 4-5 iterations
+- **Perfect Measurements**: 0% error (noise_level = 0.0)
+- **Noisy Measurements**: ~0.5% estimation error with 2% measurement noise
+- **Observability**: Fully observable with 45 measurements vs 17 states (2.6x redundancy)
+- **Convergence**: 4-5 iterations for weighted least squares
 
 ## Customization
 

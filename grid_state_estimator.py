@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from pandapower.estimation import estimate
 import warnings
 import logging
+from scipy import linalg
 
 # Disable matplotlib debug messages
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -15,6 +16,7 @@ class GridStateEstimator:
         self.net = None
         self.measurements = []
         self.estimation_results = None
+        self.observability_results = None
         
     def create_ieee9_grid(self):
         """Create IEEE 9-bus test system"""
@@ -161,6 +163,190 @@ class GridStateEstimator:
                 
         except Exception as e:
             print(f"State estimation error: {str(e)}")
+    
+    def test_observability(self):
+        """Test system observability using measurement Jacobian matrix"""
+        if self.net is None:
+            raise ValueError("Grid model not created.")
+        if len(self.net.measurement) == 0:
+            raise ValueError("No measurements available. Call simulate_measurements() first.")
+            
+        print("\n" + "="*60)
+        print("OBSERVABILITY ANALYSIS")
+        print("="*60)
+        
+        # Run power flow to get operating point
+        pp.runpp(self.net, algorithm='nr')
+        
+        # Get bus and measurement information
+        n_buses = len(self.net.bus)
+        n_measurements = len(self.net.measurement)
+        
+        # State variables: voltage magnitudes and angles (except slack bus angle)
+        # For IEEE 9-bus: 9 voltage magnitudes + 8 voltage angles = 17 states
+        n_states = 2 * n_buses - 1  # Slack bus angle is reference (0 degrees)
+        
+        print(f"System Information:")
+        print(f"  Number of buses: {n_buses}")
+        print(f"  Number of measurements: {n_measurements}")
+        print(f"  Number of state variables: {n_states}")
+        print(f"  Measurement redundancy: {n_measurements / n_states:.2f}")
+        
+        # Analyze measurement types
+        measurement_types = self.net.measurement.measurement_type.value_counts()
+        print(f"\nMeasurement Types:")
+        for mtype, count in measurement_types.items():
+            print(f"  {mtype.upper()} measurements: {count}")
+        
+        # Simple observability check based on measurement count and distribution
+        min_measurements_needed = n_states
+        
+        # Count voltage magnitude measurements (directly observable)
+        v_measurements = len(self.net.measurement[self.net.measurement.measurement_type == 'v'])
+        
+        # Count power flow measurements 
+        p_measurements = len(self.net.measurement[self.net.measurement.measurement_type == 'p'])
+        q_measurements = len(self.net.measurement[self.net.measurement.measurement_type == 'q'])
+        
+        print(f"\nObservability Assessment:")
+        print(f"  Minimum measurements needed: {min_measurements_needed}")
+        print(f"  Available measurements: {n_measurements}")
+        
+        # Basic observability conditions
+        observability_status = []
+        
+        # Condition 1: Sufficient number of measurements
+        if n_measurements >= min_measurements_needed:
+            observability_status.append("✅ Sufficient measurement count")
+        else:
+            observability_status.append("❌ Insufficient measurement count")
+        
+        # Condition 2: Voltage magnitude measurements coverage
+        if v_measurements >= n_buses * 0.5:  # At least 50% of buses have voltage measurements
+            observability_status.append("✅ Good voltage measurement coverage")
+        elif v_measurements > 0:
+            observability_status.append("⚠️  Limited voltage measurement coverage")
+        else:
+            observability_status.append("❌ No voltage measurements")
+        
+        # Condition 3: Power flow measurement coverage
+        total_possible_flows = 2 * len(self.net.line)  # from and to sides
+        actual_p_flows = p_measurements
+        if actual_p_flows >= total_possible_flows * 0.3:  # At least 30% coverage
+            observability_status.append("✅ Adequate power flow measurement coverage")
+        elif actual_p_flows > 0:
+            observability_status.append("⚠️  Limited power flow measurement coverage")
+        else:
+            observability_status.append("❌ No power flow measurements")
+        
+        # Condition 4: Network connectivity (simplified check)
+        # Check if we have measurements on multiple buses
+        measured_buses = set()
+        for _, meas in self.net.measurement.iterrows():
+            if meas.measurement_type == 'v':
+                measured_buses.add(meas.element)
+            elif meas.measurement_type in ['p', 'q']:
+                line = self.net.line.iloc[meas.element]
+                measured_buses.add(line.from_bus)
+                measured_buses.add(line.to_bus)
+        
+        if len(measured_buses) >= n_buses * 0.7:  # 70% of buses covered
+            observability_status.append("✅ Good network coverage")
+        elif len(measured_buses) >= n_buses * 0.3:
+            observability_status.append("⚠️  Partial network coverage")
+        else:
+            observability_status.append("❌ Poor network coverage")
+        
+        # Overall assessment
+        errors = sum(1 for status in observability_status if status.startswith("❌"))
+        warnings_count = sum(1 for status in observability_status if status.startswith("⚠️"))
+        
+        print(f"\nObservability Conditions:")
+        for status in observability_status:
+            print(f"  {status}")
+        
+        if errors == 0 and warnings_count == 0:
+            overall_status = "🟢 FULLY OBSERVABLE"
+            observability_level = "Excellent"
+        elif errors == 0:
+            overall_status = "🟡 LIKELY OBSERVABLE"
+            observability_level = "Good with minor issues"
+        elif errors <= 1:
+            overall_status = "🟠 PARTIALLY OBSERVABLE"
+            observability_level = "Marginal - may have unobservable islands"
+        else:
+            overall_status = "🔴 NOT OBSERVABLE"
+            observability_level = "Poor - significant observability issues"
+        
+        print(f"\nOverall Assessment: {overall_status}")
+        print(f"Observability Level: {observability_level}")
+        
+        # Store results
+        self.observability_results = {
+            'n_buses': n_buses,
+            'n_measurements': n_measurements,
+            'n_states': n_states,
+            'redundancy': n_measurements / n_states,
+            'measurement_types': dict(measurement_types),
+            'measured_buses': len(measured_buses),
+            'coverage_percentage': len(measured_buses) / n_buses * 100,
+            'status': overall_status,
+            'level': observability_level,
+            'conditions': observability_status
+        }
+        
+        # Advanced analysis: Check for critical measurements
+        self._analyze_critical_measurements()
+        
+        return self.observability_results
+    
+    def _analyze_critical_measurements(self):
+        """Analyze critical measurements and potential single points of failure"""
+        print(f"\nCritical Measurement Analysis:")
+        print("-" * 40)
+        
+        # Check for buses with only one measurement
+        bus_measurement_count = {}
+        line_measurement_count = {}
+        
+        for _, meas in self.net.measurement.iterrows():
+            if meas.measurement_type == 'v':
+                bus_idx = meas.element
+                bus_measurement_count[bus_idx] = bus_measurement_count.get(bus_idx, 0) + 1
+            elif meas.measurement_type in ['p', 'q']:
+                line_idx = meas.element
+                line_measurement_count[line_idx] = line_measurement_count.get(line_idx, 0) + 1
+        
+        # Find critical buses (only one measurement)
+        critical_buses = [bus for bus, count in bus_measurement_count.items() if count == 1]
+        if critical_buses:
+            print(f"⚠️  Critical buses (single measurement): {critical_buses}")
+        else:
+            print("✅ No critical buses found")
+        
+        # Find well-measured buses
+        well_measured_buses = [bus for bus, count in bus_measurement_count.items() if count >= 3]
+        if well_measured_buses:
+            print(f"✅ Well-measured buses (3+ measurements): {well_measured_buses}")
+        
+        # Check measurement distribution
+        unmeasured_buses = []
+        for bus_idx in self.net.bus.index:
+            if bus_idx not in bus_measurement_count:
+                # Check if bus is measured through line flows
+                measured_through_lines = False
+                for line_idx in self.net.line.index:
+                    line = self.net.line.iloc[line_idx]
+                    if (line.from_bus == bus_idx or line.to_bus == bus_idx) and line_idx in line_measurement_count:
+                        measured_through_lines = True
+                        break
+                if not measured_through_lines:
+                    unmeasured_buses.append(bus_idx)
+        
+        if unmeasured_buses:
+            print(f"❌ Unmeasured buses: {unmeasured_buses}")
+        else:
+            print("✅ All buses are measured (directly or through line flows)")
             
     def show_results(self):
         """Display state estimation results"""
@@ -350,8 +536,12 @@ def run_comparison_demo():
     print("\n3a. Running state estimation...")
     estimator.run_state_estimation()
     
+    # Test observability
+    print("\n4a. Testing observability...")
+    estimator.test_observability()
+    
     # Show results
-    print("\n4a. Results for perfect measurements:")
+    print("\n5a. Results for perfect measurements:")
     estimator.show_results()
     
     print("\n" + "="*60)
@@ -366,8 +556,12 @@ def run_comparison_demo():
     print("\n3b. Running state estimation...")
     estimator.run_state_estimation()
     
+    # Test observability
+    print("\n4b. Testing observability...")
+    estimator.test_observability()
+    
     # Show results
-    print("\n4b. Results for noisy measurements:")
+    print("\n5b. Results for noisy measurements:")
     estimator.show_results()
 
 def main():
@@ -418,8 +612,12 @@ def main():
     print("\n3. Running state estimation...")
     estimator.run_state_estimation()
     
+    # Test observability
+    print("\n4. Testing system observability...")
+    estimator.test_observability()
+    
     # Show results
-    print("\n4. Displaying results...")
+    print("\n5. Displaying results...")
     estimator.show_results()
 
 if __name__ == "__main__":
