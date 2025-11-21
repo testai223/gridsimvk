@@ -53,8 +53,41 @@ Activate the virtual environment and run the application:
 # Activate virtual environment
 source venv/bin/activate
 
-# Run the application
+# Run the application (interactive mode)
 python grid_state_estimator.py
+
+# Compare noise-free vs noisy measurements
+python grid_state_estimator.py --compare
+
+# Quick demo of different noise levels
+python demo_modes.py
+```
+
+### Available Modes
+
+1. **Perfect Measurements (No Noise)**: `noise_level = 0.0`
+   - Measurements exactly match load flow results
+   - Demonstrates ideal state estimation scenario
+   - Shows numerical precision limits
+
+2. **Noisy Measurements**: `noise_level > 0.0` 
+   - Adds Gaussian noise to all measurements
+   - Default: 2% noise level
+   - Demonstrates state estimation noise filtering
+
+3. **Interactive Mode**: Choose between perfect, noisy, or custom noise levels
+
+### Command Line Options
+
+```bash
+# Interactive mode with noise selection
+python grid_state_estimator.py
+
+# Automatic comparison of both modes  
+python grid_state_estimator.py --compare
+
+# Quick demonstration
+python demo_modes.py
 ```
 
 The application will:

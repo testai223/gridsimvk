@@ -62,7 +62,7 @@ class GridStateEstimator:
         print(f"Loads: {len(self.net.load)}")
         
     def simulate_measurements(self, noise_level=0.02):
-        """Simulate measurement values with noise"""
+        """Simulate measurement values with configurable noise"""
         if self.net is None:
             raise ValueError("Grid model not created. Call create_ieee9_grid() first.")
             
@@ -72,12 +72,20 @@ class GridStateEstimator:
         # Clear existing measurements
         self.measurements = []
         
+        # Determine if this is noise-free mode
+        noise_free_mode = (noise_level == 0.0)
+        
         # Add voltage magnitude measurements for all buses
         for bus_idx in self.net.bus.index:
             true_value = self.net.res_bus.vm_pu.iloc[bus_idx]
-            noise = np.random.normal(0, noise_level)
-            measured_value = true_value + noise
-            std_dev = noise_level
+            
+            if noise_free_mode:
+                measured_value = true_value
+                std_dev = 0.001  # Very small std_dev for numerical stability
+            else:
+                noise = np.random.normal(0, noise_level)
+                measured_value = true_value + noise
+                std_dev = noise_level
             
             pp.create_measurement(self.net, "v", "bus", measured_value, std_dev, bus_idx)
             
@@ -87,27 +95,46 @@ class GridStateEstimator:
             true_p_from = self.net.res_line.p_from_mw.iloc[line_idx]
             true_p_to = self.net.res_line.p_to_mw.iloc[line_idx]
             
-            noise_p_from = np.random.normal(0, abs(true_p_from) * noise_level)
-            noise_p_to = np.random.normal(0, abs(true_p_to) * noise_level)
+            if noise_free_mode:
+                measured_p_from = true_p_from
+                measured_p_to = true_p_to
+                std_dev_p_from = 0.01  # Small std_dev for numerical stability
+                std_dev_p_to = 0.01
+            else:
+                noise_p_from = np.random.normal(0, abs(true_p_from) * noise_level)
+                noise_p_to = np.random.normal(0, abs(true_p_to) * noise_level)
+                measured_p_from = true_p_from + noise_p_from
+                measured_p_to = true_p_to + noise_p_to
+                std_dev_p_from = abs(true_p_from) * noise_level + 0.1
+                std_dev_p_to = abs(true_p_to) * noise_level + 0.1
             
-            pp.create_measurement(self.net, "p", "line", true_p_from + noise_p_from, 
-                                abs(true_p_from) * noise_level + 0.1, line_idx, side="from")
-            pp.create_measurement(self.net, "p", "line", true_p_to + noise_p_to,
-                                abs(true_p_to) * noise_level + 0.1, line_idx, side="to")
+            pp.create_measurement(self.net, "p", "line", measured_p_from, std_dev_p_from, line_idx, side="from")
+            pp.create_measurement(self.net, "p", "line", measured_p_to, std_dev_p_to, line_idx, side="to")
             
             # Reactive power flow measurements
             true_q_from = self.net.res_line.q_from_mvar.iloc[line_idx]
             true_q_to = self.net.res_line.q_to_mvar.iloc[line_idx]
             
-            noise_q_from = np.random.normal(0, abs(true_q_from) * noise_level)
-            noise_q_to = np.random.normal(0, abs(true_q_to) * noise_level)
+            if noise_free_mode:
+                measured_q_from = true_q_from
+                measured_q_to = true_q_to
+                std_dev_q_from = 0.01  # Small std_dev for numerical stability
+                std_dev_q_to = 0.01
+            else:
+                noise_q_from = np.random.normal(0, abs(true_q_from) * noise_level)
+                noise_q_to = np.random.normal(0, abs(true_q_to) * noise_level)
+                measured_q_from = true_q_from + noise_q_from
+                measured_q_to = true_q_to + noise_q_to
+                std_dev_q_from = abs(true_q_from) * noise_level + 0.1
+                std_dev_q_to = abs(true_q_to) * noise_level + 0.1
             
-            pp.create_measurement(self.net, "q", "line", true_q_from + noise_q_from,
-                                abs(true_q_from) * noise_level + 0.1, line_idx, side="from")
-            pp.create_measurement(self.net, "q", "line", true_q_to + noise_q_to,
-                                abs(true_q_to) * noise_level + 0.1, line_idx, side="to")
+            pp.create_measurement(self.net, "q", "line", measured_q_from, std_dev_q_from, line_idx, side="from")
+            pp.create_measurement(self.net, "q", "line", measured_q_to, std_dev_q_to, line_idx, side="to")
         
-        print(f"Generated {len(self.net.measurement)} measurements with {noise_level*100:.1f}% noise level")
+        if noise_free_mode:
+            print(f"Generated {len(self.net.measurement)} perfect measurements (no noise)")
+        else:
+            print(f"Generated {len(self.net.measurement)} measurements with {noise_level*100:.1f}% noise level")
         
     def run_state_estimation(self):
         """Perform state estimation using pandapower"""
@@ -299,10 +326,10 @@ class GridStateEstimator:
             warnings.simplefilter("ignore")
             plt.show()
         
-def main():
-    """Main function to run the state estimation application"""
-    print("Power System State Estimation Application")
-    print("="*50)
+def run_comparison_demo():
+    """Compare noisy vs noise-free measurements"""
+    print("Power System State Estimation - Noise Comparison Demo")
+    print("="*60)
     
     # Create estimator instance
     estimator = GridStateEstimator()
@@ -311,9 +338,81 @@ def main():
     print("\n1. Creating IEEE 9-bus grid model...")
     estimator.create_ieee9_grid()
     
-    # Simulate measurements
-    print("\n2. Simulating measurements...")
+    print("\n" + "="*60)
+    print("SCENARIO 1: PERFECT MEASUREMENTS (No Noise)")
+    print("="*60)
+    
+    # Simulate perfect measurements
+    print("\n2a. Simulating perfect measurements...")
+    estimator.simulate_measurements(noise_level=0.0)
+    
+    # Run state estimation
+    print("\n3a. Running state estimation...")
+    estimator.run_state_estimation()
+    
+    # Show results
+    print("\n4a. Results for perfect measurements:")
+    estimator.show_results()
+    
+    print("\n" + "="*60)
+    print("SCENARIO 2: NOISY MEASUREMENTS (2% Noise)")
+    print("="*60)
+    
+    # Simulate noisy measurements
+    print("\n2b. Simulating noisy measurements...")
     estimator.simulate_measurements(noise_level=0.02)
+    
+    # Run state estimation
+    print("\n3b. Running state estimation...")
+    estimator.run_state_estimation()
+    
+    # Show results
+    print("\n4b. Results for noisy measurements:")
+    estimator.show_results()
+
+def main():
+    """Main function to run the state estimation application"""
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--compare":
+        run_comparison_demo()
+        return
+    
+    print("Power System State Estimation Application")
+    print("="*50)
+    print("Usage:")
+    print("  python grid_state_estimator.py           # Run with 2% noise (default)")
+    print("  python grid_state_estimator.py --compare # Compare perfect vs noisy measurements")
+    print()
+    
+    # Ask user for mode
+    mode = input("Choose mode:\n1. Perfect measurements (no noise)\n2. Noisy measurements (2% noise)\n3. Custom noise level\nEnter choice (1/2/3): ").strip()
+    
+    # Create estimator instance
+    estimator = GridStateEstimator()
+    
+    # Create IEEE 9-bus system
+    print("\n1. Creating IEEE 9-bus grid model...")
+    estimator.create_ieee9_grid()
+    
+    # Determine noise level
+    if mode == "1":
+        noise_level = 0.0
+    elif mode == "2":
+        noise_level = 0.02
+    elif mode == "3":
+        try:
+            noise_level = float(input("Enter noise level (0.0 for no noise, 0.02 for 2%): "))
+        except ValueError:
+            print("Invalid input, using default 2% noise")
+            noise_level = 0.02
+    else:
+        print("Invalid choice, using default 2% noise")
+        noise_level = 0.02
+    
+    # Simulate measurements
+    print(f"\n2. Simulating measurements...")
+    estimator.simulate_measurements(noise_level=noise_level)
     
     # Run state estimation
     print("\n3. Running state estimation...")
