@@ -6,6 +6,7 @@ from pandapower.estimation import estimate
 import warnings
 import logging
 from scipy import linalg
+import pandapower.plotting as plot
 
 # Disable matplotlib debug messages
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -511,6 +512,363 @@ class GridStateEstimator:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             plt.show()
+        
+        # Add grid visualization
+        self.plot_grid_results()
+    
+    def plot_grid_results(self):
+        """Plot results on grid schematic"""
+        if self.estimation_results is None:
+            print("No results to plot on grid.")
+            return
+            
+        print("\nGrid Visualization:")
+        print("-" * 40)
+        
+        try:
+            # Create figure with subplots for different visualizations
+            fig = plt.figure(figsize=(16, 10))
+            
+            # Plot 1: Voltage magnitudes on grid
+            ax1 = plt.subplot(221)
+            self._plot_voltage_magnitudes_on_grid(ax1)
+            
+            # Plot 2: Voltage errors on grid  
+            ax2 = plt.subplot(222)
+            self._plot_voltage_errors_on_grid(ax2)
+            
+            # Plot 3: Power flows on grid
+            ax3 = plt.subplot(223)
+            self._plot_power_flows_on_grid(ax3)
+            
+            # Plot 4: Measurement locations
+            ax4 = plt.subplot(224)
+            self._plot_measurement_locations(ax4)
+            
+            plt.tight_layout()
+            
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                plt.show()
+                
+        except Exception as e:
+            print(f"Grid visualization error: {e}")
+            print("Falling back to simple network plot...")
+            self._simple_network_plot()
+    
+    def _create_bus_positions(self):
+        """Create bus position coordinates for plotting"""
+        # IEEE 9-bus standard layout positions
+        bus_positions = {
+            0: (0, 2),    # Bus 1 (generator)
+            1: (2, 2),    # Bus 2 (generator) 
+            2: (4, 2),    # Bus 3 (generator)
+            3: (0, 1),    # Bus 4
+            4: (1, 0),    # Bus 5 (load)
+            5: (3, 0),    # Bus 6 (load)
+            6: (2, 1),    # Bus 7
+            7: (2, 0),    # Bus 8 (load)
+            8: (4, 1)     # Bus 9
+        }
+        return bus_positions
+    
+    def _plot_voltage_magnitudes_on_grid(self, ax):
+        """Plot voltage magnitudes as colored nodes on grid"""
+        ax.set_title('Voltage Magnitudes (Estimated)', fontsize=12, fontweight='bold')
+        
+        positions = self._create_bus_positions()
+        
+        # Get voltage magnitudes
+        vm_estimated = self.estimation_results['bus_voltages'].vm_pu.values
+        vm_true = self.net.res_bus.vm_pu.values
+        
+        # Create color map based on voltage levels
+        vm_min, vm_max = min(vm_estimated.min(), vm_true.min()), max(vm_estimated.max(), vm_true.max())
+        
+        # Draw buses as circles with colors representing voltage magnitudes
+        for bus_idx in self.net.bus.index:
+            x, y = positions[bus_idx]
+            vm_est = vm_estimated[bus_idx]
+            vm_actual = vm_true[bus_idx]
+            
+            # Color based on estimated voltage magnitude
+            color_intensity = (vm_est - vm_min) / (vm_max - vm_min)
+            color = plt.cm.RdYlBu_r(color_intensity)
+            
+            # Draw bus
+            circle = plt.Circle((x, y), 0.15, color=color, alpha=0.8, ec='black', linewidth=2)
+            ax.add_patch(circle)
+            
+            # Add bus number and voltage values
+            ax.text(x, y, f'{bus_idx}', ha='center', va='center', fontweight='bold', fontsize=9)
+            ax.text(x, y-0.35, f'Est: {vm_est:.3f}', ha='center', va='center', fontsize=8)
+            ax.text(x, y-0.5, f'True: {vm_actual:.3f}', ha='center', va='center', fontsize=8)
+        
+        # Draw lines
+        self._draw_transmission_lines(ax, positions, color='gray', alpha=0.6)
+        
+        # Add colorbar
+        sm = plt.cm.ScalarMappable(cmap=plt.cm.RdYlBu_r, norm=plt.Normalize(vmin=vm_min, vmax=vm_max))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax)
+        cbar.set_label('Voltage Magnitude (p.u.)', rotation=270, labelpad=15)
+        
+        ax.set_xlim(-0.5, 4.5)
+        ax.set_ylim(-0.8, 2.5)
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlabel('Network Position')
+        ax.set_ylabel('Network Position')
+    
+    def _plot_voltage_errors_on_grid(self, ax):
+        """Plot voltage estimation errors as colored nodes"""
+        ax.set_title('Voltage Estimation Errors', fontsize=12, fontweight='bold')
+        
+        positions = self._create_bus_positions()
+        
+        # Calculate voltage errors
+        vm_estimated = self.estimation_results['bus_voltages'].vm_pu.values
+        vm_true = self.net.res_bus.vm_pu.values
+        errors = ((vm_estimated - vm_true) / vm_true) * 100  # Percentage errors
+        
+        # Color map for errors (blue = negative, white = zero, red = positive)
+        error_max = max(abs(errors.min()), abs(errors.max()))
+        
+        for bus_idx in self.net.bus.index:
+            x, y = positions[bus_idx]
+            error = errors[bus_idx]
+            
+            # Color based on error magnitude and sign
+            if error_max > 0:
+                color_intensity = error / error_max  # -1 to 1
+                if error >= 0:
+                    color = plt.cm.Reds(abs(color_intensity))
+                else:
+                    color = plt.cm.Blues(abs(color_intensity))
+            else:
+                color = 'white'
+            
+            # Draw bus
+            circle = plt.Circle((x, y), 0.15, color=color, alpha=0.8, ec='black', linewidth=2)
+            ax.add_patch(circle)
+            
+            # Add bus number and error
+            ax.text(x, y, f'{bus_idx}', ha='center', va='center', fontweight='bold', fontsize=9)
+            ax.text(x, y-0.35, f'{error:.3f}%', ha='center', va='center', fontsize=8)
+        
+        # Draw lines
+        self._draw_transmission_lines(ax, positions, color='gray', alpha=0.6)
+        
+        ax.set_xlim(-0.5, 4.5)
+        ax.set_ylim(-0.8, 2.5)
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlabel('Network Position')
+        ax.set_ylabel('Network Position')
+        
+        # Add legend
+        ax.text(0.02, 0.98, 'Red: Overestimated\nBlue: Underestimated', 
+                transform=ax.transAxes, va='top', ha='left',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    def _plot_power_flows_on_grid(self, ax):
+        """Plot power flows as arrows on transmission lines"""
+        ax.set_title('Active Power Flows (MW)', fontsize=12, fontweight='bold')
+        
+        positions = self._create_bus_positions()
+        
+        # Draw buses
+        for bus_idx in self.net.bus.index:
+            x, y = positions[bus_idx]
+            
+            # Color based on bus type
+            if bus_idx in [0, 1, 2]:  # Generator buses
+                color = 'lightgreen'
+            elif bus_idx in [4, 5, 7]:  # Load buses
+                color = 'lightcoral'
+            else:  # Other buses
+                color = 'lightblue'
+            
+            circle = plt.Circle((x, y), 0.12, color=color, alpha=0.8, ec='black', linewidth=1.5)
+            ax.add_patch(circle)
+            ax.text(x, y, f'{bus_idx}', ha='center', va='center', fontweight='bold', fontsize=9)
+        
+        # Draw lines with power flow arrows
+        for line_idx in self.net.line.index:
+            line = self.net.line.iloc[line_idx]
+            from_bus = int(line.from_bus)
+            to_bus = int(line.to_bus)
+            
+            x1, y1 = positions[from_bus]
+            x2, y2 = positions[to_bus]
+            
+            # Get power flow
+            p_flow = self.net.res_line.p_from_mw.iloc[line_idx]
+            
+            # Draw line
+            ax.plot([x1, x2], [y1, y2], 'k-', linewidth=2, alpha=0.7)
+            
+            # Calculate arrow position and direction
+            mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
+            dx, dy = x2 - x1, y2 - y1
+            length = np.sqrt(dx**2 + dy**2)
+            
+            if length > 0:
+                # Normalize direction
+                dx_norm, dy_norm = dx / length, dy / length
+                
+                # Arrow size based on power flow magnitude
+                arrow_scale = min(abs(p_flow) / 50, 0.15)  # Scale factor
+                
+                # Arrow direction based on power flow sign
+                if p_flow >= 0:
+                    arrow_dx, arrow_dy = dx_norm * arrow_scale, dy_norm * arrow_scale
+                else:
+                    arrow_dx, arrow_dy = -dx_norm * arrow_scale, -dy_norm * arrow_scale
+                
+                # Draw arrow
+                if abs(p_flow) > 1:  # Only draw if significant power flow
+                    ax.arrow(mid_x - arrow_dx/2, mid_y - arrow_dy/2, arrow_dx, arrow_dy,
+                            head_width=0.05, head_length=0.05, fc='red', ec='red', alpha=0.8)
+                
+                # Add power flow label
+                ax.text(mid_x + 0.1, mid_y + 0.1, f'{p_flow:.1f}', ha='center', va='center', 
+                       fontsize=8, bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
+        
+        ax.set_xlim(-0.5, 4.5)
+        ax.set_ylim(-0.8, 2.5)
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlabel('Network Position')
+        ax.set_ylabel('Network Position')
+        
+        # Add legend
+        legend_text = 'Green: Generators\nRed: Loads\nBlue: Transfer buses\nArrows: Power flow direction'
+        ax.text(0.02, 0.98, legend_text, transform=ax.transAxes, va='top', ha='left',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    def _plot_measurement_locations(self, ax):
+        """Plot measurement locations and types"""
+        ax.set_title('Measurement Locations', fontsize=12, fontweight='bold')
+        
+        positions = self._create_bus_positions()
+        
+        # Count measurements per bus and line
+        bus_measurements = {}
+        line_measurements = {}
+        
+        for _, meas in self.net.measurement.iterrows():
+            if meas.measurement_type == 'v':
+                bus_idx = meas.element
+                bus_measurements[bus_idx] = bus_measurements.get(bus_idx, 0) + 1
+            elif meas.measurement_type in ['p', 'q']:
+                line_idx = meas.element
+                line_measurements[line_idx] = line_measurements.get(line_idx, 0) + 1
+        
+        # Draw buses with measurement indicators
+        for bus_idx in self.net.bus.index:
+            x, y = positions[bus_idx]
+            
+            # Color and size based on number of measurements
+            meas_count = bus_measurements.get(bus_idx, 0)
+            if meas_count == 0:
+                color = 'lightgray'
+                size = 0.08
+            elif meas_count == 1:
+                color = 'yellow'
+                size = 0.12
+            elif meas_count <= 3:
+                color = 'orange'
+                size = 0.15
+            else:
+                color = 'red'
+                size = 0.18
+            
+            circle = plt.Circle((x, y), size, color=color, alpha=0.8, ec='black', linewidth=1.5)
+            ax.add_patch(circle)
+            ax.text(x, y, f'{bus_idx}', ha='center', va='center', fontweight='bold', fontsize=9)
+            
+            if meas_count > 0:
+                ax.text(x, y-0.3, f'V:{meas_count}', ha='center', va='center', fontsize=7)
+        
+        # Draw lines with measurement indicators
+        for line_idx in self.net.line.index:
+            line = self.net.line.iloc[line_idx]
+            from_bus = int(line.from_bus)
+            to_bus = int(line.to_bus)
+            
+            x1, y1 = positions[from_bus]
+            x2, y2 = positions[to_bus]
+            
+            # Line color based on measurements
+            meas_count = line_measurements.get(line_idx, 0)
+            if meas_count == 0:
+                color = 'lightgray'
+                alpha = 0.5
+                width = 1
+            else:
+                color = 'green'
+                alpha = 0.8
+                width = 2 + meas_count * 0.5
+            
+            ax.plot([x1, x2], [y1, y2], color=color, linewidth=width, alpha=alpha)
+            
+            # Add measurement count label
+            if meas_count > 0:
+                mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
+                ax.text(mid_x, mid_y, f'P/Q:{meas_count}', ha='center', va='center', 
+                       fontsize=7, bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
+        
+        ax.set_xlim(-0.5, 4.5)
+        ax.set_ylim(-0.8, 2.5)
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlabel('Network Position')
+        ax.set_ylabel('Network Position')
+        
+        # Add legend
+        legend_text = 'Bus sizes indicate measurement count:\nGray: No measurements\nYellow: 1 measurement\nOrange: 2-3 measurements\nRed: 4+ measurements\n\nGreen lines: Measured lines'
+        ax.text(0.02, 0.98, legend_text, transform=ax.transAxes, va='top', ha='left',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    def _draw_transmission_lines(self, ax, positions, color='black', alpha=1.0, linewidth=1):
+        """Draw transmission lines between buses"""
+        for line_idx in self.net.line.index:
+            line = self.net.line.iloc[line_idx]
+            from_bus = int(line.from_bus)
+            to_bus = int(line.to_bus)
+            
+            x1, y1 = positions[from_bus]
+            x2, y2 = positions[to_bus]
+            
+            ax.plot([x1, x2], [y1, y2], color=color, alpha=alpha, linewidth=linewidth)
+    
+    def _simple_network_plot(self):
+        """Simple fallback network plot using pandapower plotting"""
+        try:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Create bus geodata for positioning
+            bus_geodata = pd.DataFrame(index=self.net.bus.index)
+            positions = self._create_bus_positions()
+            
+            for bus_idx in self.net.bus.index:
+                x, y = positions[bus_idx]
+                bus_geodata.loc[bus_idx, 'x'] = x
+                bus_geodata.loc[bus_idx, 'y'] = y
+            
+            self.net.bus_geodata = bus_geodata
+            
+            # Simple network plot
+            plot.simple_plot(self.net, ax=ax, plot_loads=True, plot_gens=True, 
+                            bus_size=0.3, line_width=2.0, show_plot=False)
+            
+            ax.set_title('IEEE 9-Bus System Layout')
+            plt.show()
+            
+        except Exception as e:
+            print(f"Simple network plot failed: {e}")
+            print("Grid visualization not available.")
         
 def run_comparison_demo():
     """Compare noisy vs noise-free measurements"""

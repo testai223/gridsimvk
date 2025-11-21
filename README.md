@@ -8,6 +8,7 @@ A Python application for power system state estimation using the pandapower libr
 - **Measurement Simulation**: Generates realistic voltage and power flow measurements with configurable noise levels
 - **State Estimation**: Performs weighted least squares state estimation using pandapower
 - **Observability Analysis**: Tests system observability and identifies critical measurements
+- **Grid Visualization**: Interactive plots showing results directly on network schematic
 - **Comprehensive Results**: Displays results in both tabular and graphical formats
 - **Error Analysis**: Provides detailed statistical analysis of estimation accuracy
 - **Noise-Free Mode**: Perfect measurements for algorithm validation and testing
@@ -93,6 +94,9 @@ python demo_modes.py
 
 # Test observability with different measurement scenarios
 python test_observability.py
+
+# Demo grid visualization features
+python demo_grid_plots.py
 ```
 
 The application will:
@@ -105,8 +109,12 @@ The application will:
    - Bus voltage magnitudes and angles comparison
    - Line power flows (active and reactive)  
    - Measurement comparison tables (Load Flow vs Measured vs Estimated)
-   - Visualization plots with error analysis
-   - Statistical performance metrics
+   - Grid visualization with network schematic showing:
+     - Color-coded voltage magnitudes across the network
+     - Estimation error distribution (red/blue heat map)
+     - Power flow directions and magnitudes with arrows
+     - Measurement sensor locations and coverage
+   - Statistical performance metrics and error analysis
 
 ## Application Structure
 
@@ -117,6 +125,7 @@ The application will:
 - `test_observability()`: Analyzes system observability, measurement redundancy, and critical measurements
 - `run_state_estimation()`: Performs weighted least squares state estimation
 - `show_results()`: Displays comprehensive results in tabular and graphical formats
+- `plot_grid_results()`: Creates interactive grid visualizations showing results on network schematic
 
 ### Observability Analysis
 
@@ -148,9 +157,12 @@ The application provides:
 - Statistical error analysis
 
 ### Graphical Results
-- Voltage magnitude comparison plots
-- Voltage angle comparison plots
-- Error distribution charts
+- **Standard Plots**: Voltage magnitude/angle comparisons and error distributions
+- **Grid Visualization**: Four interactive plots on network schematic:
+  1. **Voltage Magnitudes**: Color-coded buses showing estimated voltage levels
+  2. **Estimation Errors**: Red/blue heat map showing over/under estimation
+  3. **Power Flows**: Directional arrows showing MW flows on transmission lines
+  4. **Measurement Coverage**: Sensor locations with coverage indicators
 
 ### Typical Performance
 - **Perfect Measurements**: 0% error (noise_level = 0.0)
