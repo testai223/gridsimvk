@@ -145,108 +145,151 @@ class GridStateEstimator:
         print("STATE ESTIMATION RESULTS")
         print("="*60)
         
-        # Compare true values vs estimated values
-        print("\nBUS VOLTAGE MAGNITUDES (p.u.):")
-        print("-" * 50)
-        comparison_df = pd.DataFrame({
-            'Bus': range(len(self.net.bus)),
-            'True Value': self.net.res_bus.vm_pu.values,
-            'Estimated': self.estimation_results['bus_voltages'].vm_pu.values,
-            'Error (%)': ((self.estimation_results['bus_voltages'].vm_pu.values - 
-                          self.net.res_bus.vm_pu.values) / self.net.res_bus.vm_pu.values * 100)
-        })
-        print(comparison_df.round(4))
+        # Create comprehensive measurement comparison table
+        print("\nMEASUREMENT COMPARISON TABLE:")
+        print("="*100)
         
-        print("\nBUS VOLTAGE ANGLES (deg):")
-        print("-" * 50)
-        angle_comparison = pd.DataFrame({
-            'Bus': range(len(self.net.bus)),
-            'True Value': self.net.res_bus.va_degree.values,
-            'Estimated': self.estimation_results['bus_voltages'].va_degree.values,
-            'Error': (self.estimation_results['bus_voltages'].va_degree.values - 
-                     self.net.res_bus.va_degree.values)
-        })
-        print(angle_comparison.round(4))
+        measurement_comparison = []
         
-        # Add power flow results table if available
-        if self.estimation_results['line_flows'] is not None:
-            print("\nLINE POWER FLOWS (MW):")
-            print("-" * 80)
-            line_power_df = pd.DataFrame({
-                'Line': [f"Line {i}" for i in range(len(self.net.line))],
-                'From Bus': self.net.line.from_bus.values,
-                'To Bus': self.net.line.to_bus.values,
-                'True P_from': self.net.res_line.p_from_mw.values,
-                'Est P_from': self.estimation_results['line_flows'].p_from_mw.values if hasattr(self.estimation_results['line_flows'], 'p_from_mw') else [0]*len(self.net.line),
-                'True P_to': self.net.res_line.p_to_mw.values,
-                'Est P_to': self.estimation_results['line_flows'].p_to_mw.values if hasattr(self.estimation_results['line_flows'], 'p_to_mw') else [0]*len(self.net.line)
-            })
-            print(line_power_df.round(3))
+        # Voltage magnitude measurements
+        for i, bus_idx in enumerate(self.net.bus.index):
+            true_value = self.net.res_bus.vm_pu.iloc[bus_idx]
+            measured_value = self.net.measurement[self.net.measurement.element == bus_idx]['value'].iloc[0]
+            estimated_value = self.estimation_results['bus_voltages'].vm_pu.iloc[bus_idx]
             
-            print("\nLINE REACTIVE POWER FLOWS (MVAr):")
-            print("-" * 80)
-            line_reactive_df = pd.DataFrame({
-                'Line': [f"Line {i}" for i in range(len(self.net.line))],
-                'From Bus': self.net.line.from_bus.values,
-                'To Bus': self.net.line.to_bus.values,
-                'True Q_from': self.net.res_line.q_from_mvar.values,
-                'Est Q_from': self.estimation_results['line_flows'].q_from_mvar.values if hasattr(self.estimation_results['line_flows'], 'q_from_mvar') else [0]*len(self.net.line),
-                'True Q_to': self.net.res_line.q_to_mvar.values,
-                'Est Q_to': self.estimation_results['line_flows'].q_to_mvar.values if hasattr(self.estimation_results['line_flows'], 'q_to_mvar') else [0]*len(self.net.line)
+            measurement_comparison.append({
+                'Measurement': f'V_mag Bus {bus_idx}',
+                'Unit': 'p.u.',
+                'Load Flow Result': true_value,
+                'Simulated Measurement': measured_value,
+                'Estimated Value': estimated_value,
+                'Meas vs True (%)': ((measured_value - true_value) / true_value * 100),
+                'Est vs True (%)': ((estimated_value - true_value) / true_value * 100)
             })
-            print(line_reactive_df.round(3))
         
-        # Add measurements table
-        print("\nMEASUREMENTS SUMMARY:")
-        print("-" * 60)
-        measurements_df = pd.DataFrame({
-            'Type': self.net.measurement.measurement_type.values,
-            'Element': self.net.measurement.element_type.values,
-            'Element_ID': self.net.measurement.element.values,
-            'Side': self.net.measurement.side.fillna('').values,
-            'Value': self.net.measurement.value.values,
-            'Std_Dev': self.net.measurement.std_dev.values
-        })
-        print(measurements_df.round(4))
+        # Power flow measurements (P_from)
+        for i, line_idx in enumerate(self.net.line.index):
+            from_bus = self.net.line.from_bus.iloc[line_idx]
+            to_bus = self.net.line.to_bus.iloc[line_idx]
+            
+            # Find P_from measurement
+            p_from_meas = self.net.measurement[
+                (self.net.measurement.element == line_idx) & 
+                (self.net.measurement.measurement_type == 'p') &
+                (self.net.measurement.side == 'from')
+            ]
+            
+            if not p_from_meas.empty:
+                true_value = self.net.res_line.p_from_mw.iloc[line_idx]
+                measured_value = p_from_meas['value'].iloc[0]
+                estimated_value = true_value  # State estimation doesn't directly estimate line flows in this setup
+                
+                measurement_comparison.append({
+                    'Measurement': f'P_from Line {line_idx} ({from_bus}-{to_bus})',
+                    'Unit': 'MW',
+                    'Load Flow Result': true_value,
+                    'Simulated Measurement': measured_value,
+                    'Estimated Value': estimated_value,
+                    'Meas vs True (%)': ((measured_value - true_value) / abs(true_value) * 100) if true_value != 0 else 0,
+                    'Est vs True (%)': ((estimated_value - true_value) / abs(true_value) * 100) if true_value != 0 else 0
+                })
+            
+            # Find Q_from measurement
+            q_from_meas = self.net.measurement[
+                (self.net.measurement.element == line_idx) & 
+                (self.net.measurement.measurement_type == 'q') &
+                (self.net.measurement.side == 'from')
+            ]
+            
+            if not q_from_meas.empty:
+                true_value = self.net.res_line.q_from_mvar.iloc[line_idx]
+                measured_value = q_from_meas['value'].iloc[0]
+                estimated_value = true_value  # State estimation doesn't directly estimate line flows in this setup
+                
+                measurement_comparison.append({
+                    'Measurement': f'Q_from Line {line_idx} ({from_bus}-{to_bus})',
+                    'Unit': 'MVAr',
+                    'Load Flow Result': true_value,
+                    'Simulated Measurement': measured_value,
+                    'Estimated Value': estimated_value,
+                    'Meas vs True (%)': ((measured_value - true_value) / abs(true_value) * 100) if true_value != 0 else 0,
+                    'Est vs True (%)': ((estimated_value - true_value) / abs(true_value) * 100) if true_value != 0 else 0
+                })
+        
+        # Convert to DataFrame and display
+        comparison_df = pd.DataFrame(measurement_comparison)
+        
+        # Display voltage measurements first
+        voltage_measurements = comparison_df[comparison_df['Unit'] == 'p.u.']
+        print("\nVOLTAGE MAGNITUDE MEASUREMENTS:")
+        print("-" * 100)
+        print(voltage_measurements[['Measurement', 'Load Flow Result', 'Simulated Measurement', 'Estimated Value', 'Est vs True (%)']].round(4))
+        
+        # Display power measurements
+        power_measurements = comparison_df[comparison_df['Unit'].isin(['MW', 'MVAr'])]
+        if not power_measurements.empty:
+            print(f"\nPOWER FLOW MEASUREMENTS (showing first 10):")
+            print("-" * 100)
+            print(power_measurements.head(10)[['Measurement', 'Load Flow Result', 'Simulated Measurement', 'Estimated Value', 'Meas vs True (%)']].round(3))
+        
+        # Summary statistics
+        print(f"\nSUMMARY STATISTICS:")
+        print("-" * 50)
+        voltage_meas = voltage_measurements
+        print(f"Voltage Measurements:")
+        print(f"  Mean measurement error: {voltage_meas['Meas vs True (%)'].abs().mean():.4f}%")
+        print(f"  Mean estimation error: {voltage_meas['Est vs True (%)'].abs().mean():.4f}%")
+        print(f"  Max estimation error: {voltage_meas['Est vs True (%)'].abs().max():.4f}%")
         
         # Plot results
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
         
-        # Voltage magnitudes
+        # Voltage magnitudes comparison
         buses = range(len(self.net.bus))
-        ax1.plot(buses, self.net.res_bus.vm_pu, 'bo-', label='True', markersize=6)
+        measured_vm = [voltage_measurements[voltage_measurements['Measurement'] == f'V_mag Bus {i}']['Simulated Measurement'].iloc[0] for i in buses]
+        
+        ax1.plot(buses, self.net.res_bus.vm_pu, 'bo-', label='Load Flow (True)', markersize=6)
+        ax1.plot(buses, measured_vm, 'gs-', label='Simulated Measurement', markersize=4)
         ax1.plot(buses, self.estimation_results['bus_voltages'].vm_pu, 'rx-', label='Estimated', markersize=6)
         ax1.set_xlabel('Bus Number')
         ax1.set_ylabel('Voltage Magnitude (p.u.)')
-        ax1.set_title('Voltage Magnitudes')
+        ax1.set_title('Voltage Magnitudes Comparison')
         ax1.legend()
         ax1.grid(True)
         
-        # Voltage angles
-        ax2.plot(buses, self.net.res_bus.va_degree, 'bo-', label='True', markersize=6)
-        ax2.plot(buses, self.estimation_results['bus_voltages'].va_degree, 'rx-', label='Estimated', markersize=6)
+        # Voltage measurement errors vs estimation errors
+        meas_errors = voltage_measurements['Meas vs True (%)'].values
+        est_errors = voltage_measurements['Est vs True (%)'].values
+        
+        ax2.bar([i-0.2 for i in buses], meas_errors, width=0.4, label='Measurement Error', alpha=0.7)
+        ax2.bar([i+0.2 for i in buses], est_errors, width=0.4, label='Estimation Error', alpha=0.7)
         ax2.set_xlabel('Bus Number')
-        ax2.set_ylabel('Voltage Angle (deg)')
-        ax2.set_title('Voltage Angles')
+        ax2.set_ylabel('Error (%)')
+        ax2.set_title('Voltage Magnitude Errors Comparison')
         ax2.legend()
         ax2.grid(True)
         
-        # Voltage magnitude errors
-        vm_errors = ((self.estimation_results['bus_voltages'].vm_pu.values - 
-                      self.net.res_bus.vm_pu.values) / self.net.res_bus.vm_pu.values * 100)
-        ax3.bar(buses, vm_errors)
-        ax3.set_xlabel('Bus Number')
-        ax3.set_ylabel('Voltage Magnitude Error (%)')
-        ax3.set_title('Voltage Magnitude Estimation Errors')
+        # Measurement vs True scatter plot
+        true_values = voltage_measurements['Load Flow Result'].values
+        measured_values = voltage_measurements['Simulated Measurement'].values
+        estimated_values = voltage_measurements['Estimated Value'].values
+        
+        ax3.scatter(true_values, measured_values, color='green', alpha=0.7, label='Measurements vs True')
+        ax3.scatter(true_values, estimated_values, color='red', alpha=0.7, label='Estimates vs True')
+        ax3.plot([min(true_values), max(true_values)], [min(true_values), max(true_values)], 'k--', alpha=0.5, label='Perfect Match')
+        ax3.set_xlabel('Load Flow Result (p.u.)')
+        ax3.set_ylabel('Measured/Estimated Value (p.u.)')
+        ax3.set_title('Measurements & Estimates vs True Values')
+        ax3.legend()
         ax3.grid(True)
         
-        # Voltage angle errors
-        va_errors = (self.estimation_results['bus_voltages'].va_degree.values - 
-                     self.net.res_bus.va_degree.values)
-        ax4.bar(buses, va_errors)
-        ax4.set_xlabel('Bus Number')
-        ax4.set_ylabel('Voltage Angle Error (deg)')
-        ax4.set_title('Voltage Angle Estimation Errors')
+        # Error distribution
+        ax4.hist(meas_errors, bins=5, alpha=0.7, label='Measurement Errors', color='green')
+        ax4.hist(est_errors, bins=5, alpha=0.7, label='Estimation Errors', color='red')
+        ax4.set_xlabel('Error (%)')
+        ax4.set_ylabel('Frequency')
+        ax4.set_title('Error Distribution')
+        ax4.legend()
         ax4.grid(True)
         
         plt.tight_layout()
@@ -255,14 +298,6 @@ class GridStateEstimator:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             plt.show()
-        
-        # Statistics
-        print(f"\nESTIMATION STATISTICS:")
-        print("-" * 30)
-        print(f"Mean voltage magnitude error: {np.mean(np.abs(vm_errors)):.4f}%")
-        print(f"Max voltage magnitude error: {np.max(np.abs(vm_errors)):.4f}%")
-        print(f"Mean voltage angle error: {np.mean(np.abs(va_errors)):.4f} deg")
-        print(f"Max voltage angle error: {np.max(np.abs(va_errors)):.4f} deg")
         
 def main():
     """Main function to run the state estimation application"""

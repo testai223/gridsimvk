@@ -26,16 +26,35 @@ git clone <repository-url>
 cd gridsimvk
 ```
 
-2. Install dependencies:
+2. Create and activate virtual environment:
 ```bash
+# Create virtual environment
+python3 -m venv venv
+
+# Activate virtual environment
+source venv/bin/activate  # On macOS/Linux
+# or
+venv\Scripts\activate     # On Windows
+
+# Install dependencies
 pip install -r requirements.txt
+```
+
+**Quick setup script:**
+```bash
+# Use the provided activation script
+./activate_venv.sh
 ```
 
 ## Usage
 
-Run the main application:
+Activate the virtual environment and run the application:
 ```bash
-python3 grid_state_estimator.py
+# Activate virtual environment
+source venv/bin/activate
+
+# Run the application
+python grid_state_estimator.py
 ```
 
 The application will:
