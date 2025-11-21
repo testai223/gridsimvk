@@ -4,6 +4,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pandapower.estimation import estimate
 import warnings
+import logging
+
+# Disable matplotlib debug messages
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
 
 class GridStateEstimator:
     def __init__(self):
@@ -114,6 +119,8 @@ class GridStateEstimator:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
+                # Disable pandapower debug messages
+                logging.getLogger('pandapower').setLevel(logging.WARNING)
                 success = estimate(self.net, algorithm='wls')
                 
             if success:
@@ -243,7 +250,11 @@ class GridStateEstimator:
         ax4.grid(True)
         
         plt.tight_layout()
-        plt.show()
+        
+        # Suppress matplotlib debug output
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            plt.show()
         
         # Statistics
         print(f"\nESTIMATION STATISTICS:")
