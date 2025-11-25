@@ -4,14 +4,34 @@ A Python application for power system state estimation using the pandapower libr
 
 ## Features
 
-- **IEEE 9-Bus Grid Model**: Creates standard IEEE 9-bus test system
-- **Measurement Simulation**: Generates realistic voltage and power flow measurements with configurable noise levels
-- **State Estimation**: Performs weighted least squares state estimation using pandapower
-- **Observability Analysis**: Tests system observability and identifies critical measurements
-- **Grid Visualization**: Interactive plots showing results directly on network schematic
-- **Comprehensive Results**: Displays results in both tabular and graphical formats
-- **Error Analysis**: Provides detailed statistical analysis of estimation accuracy
-- **Noise-Free Mode**: Perfect measurements for algorithm validation and testing
+### 🏭 Grid Models
+- **IEEE 9-Bus Test System**: Standard test system for algorithm validation
+- **ENTSO-E Transmission Grid**: Realistic 400kV/220kV multi-voltage transmission system
+- **CGMES Interface**: Support for CGMES/CIM model loading with ENTSO-E compliance
+
+### 📊 Measurement Capabilities
+- **Measurement Simulation**: Realistic voltage and power flow measurements with configurable noise
+- **Interactive Modification**: Modify specific measurements (e.g., "set bus 1 = 1.2 p.u.")
+- **Bad Data Scenarios**: Test with unrealistic measurements for validation
+- **Noise-Free Mode**: Perfect measurements for algorithm verification
+
+### ⚡ State Estimation
+- **Weighted Least Squares**: Industry-standard state estimation algorithm
+- **Observability Analysis**: Comprehensive measurement redundancy and coverage analysis
+- **Bad Data Detection**: Chi-square test, largest normalized residual test, statistical outlier detection
+- **Sensitivity Testing**: Analyze impact of measurement errors
+- **Real-time Results**: Immediate feedback on estimation accuracy
+
+### 📈 Analysis & Visualization
+- **Grid Visualization**: Interactive plots on network schematic topology
+- **Comprehensive Results**: Tabular and graphical result presentation
+- **Error Analysis**: Detailed statistical analysis of estimation performance
+- **Comparison Tools**: Compare different scenarios and grid configurations
+
+### 🖥️ User Interface
+- **Interactive Main Script**: Complete menu-driven interface for all functionality
+- **Command-Line Tools**: Individual scripts for specific tasks
+- **Demo Scripts**: Step-by-step examples and tutorials
 
 ## Requirements
 
@@ -51,16 +71,80 @@ pip install -r requirements.txt
 
 ## Usage
 
-Activate the virtual environment and run the application:
+### 🚀 Quick Start - Interactive Main Application
+
 ```bash
 # Activate virtual environment
 source venv/bin/activate
 
-# Run the application (interactive mode)
-python grid_state_estimator.py
+# Run the main interactive application
+python3 main.py
+```
 
-# Compare noise-free vs noisy measurements
-python grid_state_estimator.py --compare
+The main script provides a complete menu-driven interface with all functionality:
+- Grid model creation (IEEE 9-bus, ENTSO-E transmission)
+- Measurement simulation and modification
+- State estimation and analysis
+- Observability testing
+- Results visualization
+- CGMES interface
+- Demo scenarios
+
+### 📋 Command Line Usage
+
+**Basic workflow:**
+```bash
+# Run individual components
+python3 grid_state_estimator.py          # Core functionality
+python3 demo_measurement_modification.py # Measurement modification demo
+python3 test_entso_grid.py              # ENTSO-E transmission test
+python3 cgmes_interface.py              # CGMES interface test
+```
+
+**Example: Set specific bus voltage**
+```python
+from grid_state_estimator import GridStateEstimator
+
+estimator = GridStateEstimator()
+estimator.create_ieee9_grid()
+estimator.simulate_measurements(noise_level=0.02)
+
+# Modify specific measurement: "bus 1 = 1.2 p.u."
+estimator.modify_bus_voltage_measurement(bus_id=1, new_voltage_pu=1.2)
+
+# Run state estimation with modified measurement
+estimator.run_state_estimation()
+estimator.show_results()
+```
+
+### 🎯 Quick Examples
+
+**Using the interactive main application:**
+1. `python3 main.py` → Start interactive interface
+2. Select "1" → Create IEEE 9-bus grid
+3. Select "2" → Generate measurements  
+4. Select "3" → Modify measurements (set Bus 1 = 1.2 p.u.)
+5. Select "4" → Run state estimation
+6. Select "6" → Show detailed results
+
+**Using the simple launcher:**
+```bash
+./run.sh  # Automatic environment setup and application start
+```
+
+### 📱 Available Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `main.py` | 🎯 **Interactive main application** |
+| `run.sh` | 🚀 Simple launcher with auto-setup |
+| `grid_state_estimator.py` | Core estimation functionality |
+| `demo_measurement_modification.py` | Measurement modification examples |
+| `test_entso_grid.py` | ENTSO-E transmission grid testing |
+| `cgmes_interface.py` | CGMES/CIM interface demonstration |
+| `example_set_bus_voltage.py` | Quick bus voltage modification example |
+| `demo_bad_data_detection.py` | Bad data detection demonstration |
+| `test_bad_data_detection.py` | Comprehensive bad data testing |
 
 # Quick demo of different noise levels
 python demo_modes.py
