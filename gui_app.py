@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, scrolledtext
 import sys
 import os
 import numpy as np
+from threading import Thread
 
 from grid_state_estimator import GridStateEstimator
 
@@ -157,10 +158,27 @@ class PowerSystemGUI:
         results_frame = ttk.Frame(self.notebook)
         self.notebook.add(results_frame, text="Results")
         results_frame.columnconfigure(0, weight=1)
-        results_frame.rowconfigure(0, weight=1)
-        
-        self.results_text = scrolledtext.ScrolledText(results_frame, height=30, width=80)
-        self.results_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        results_frame.columnconfigure(1, weight=0)
+        results_frame.rowconfigure(2, weight=1)
+
+        ttk.Label(results_frame, text="State Estimation Summary", font=("Arial", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 5)
+        )
+
+        columns = ("Bus", "True Vm (p.u.)", "Estimated Vm (p.u.)", "Error (%)", "Angle (deg)")
+        self.results_table = ttk.Treeview(results_frame, columns=columns, show="headings", height=10)
+        for col in columns:
+            self.results_table.heading(col, text=col)
+            self.results_table.column(col, width=130, anchor=tk.CENTER)
+
+        scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=self.results_table.yview)
+        self.results_table.configure(yscrollcommand=scrollbar.set)
+
+        self.results_table.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        scrollbar.grid(row=1, column=1, sticky=(tk.N, tk.S))
+
+        self.results_text = scrolledtext.ScrolledText(results_frame, height=15, width=80)
+        self.results_text.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(10, 0))
         
     def create_status_bar(self, parent):
         """Create status bar at bottom"""
@@ -310,6 +328,7 @@ class PowerSystemGUI:
             
             if self.estimator.estimation_results:
                 self.log_output("✅ State estimation completed successfully!")
+                self._update_results_table()
                 self.update_grid_info()
             else:
                 self.log_output("❌ State estimation failed")
@@ -395,9 +414,71 @@ class PowerSystemGUI:
             self.update_status("Displaying results...")
             self.log_results("=== STATE ESTIMATION RESULTS ===")
             self.run_with_output_capture(self.estimator.show_results)
+            self._update_results_table()
             self.update_status("Ready")
-            
+
         Thread(target=task, daemon=True).start()
+
+    def _prepare_results_table_data(self):
+        """Prepare table rows from state estimation results."""
+        if not self.estimator or not self.estimator.estimation_results:
+            return []
+
+        net = self.estimator.net
+        bus_results = self.estimator.estimation_results.get('bus_voltages')
+        if net is None or bus_results is None:
+            return []
+
+        true_voltages = getattr(net, 'res_bus', None)
+        if true_voltages is not None:
+            true_voltages = true_voltages.vm_pu
+
+        table_rows = []
+        for bus_idx, row in bus_results.iterrows():
+            est_vm = row.get('vm_pu', np.nan)
+            angle = row.get('va_degree', np.nan)
+            true_vm = true_voltages.iloc[bus_idx] if true_voltages is not None and len(true_voltages) > bus_idx else np.nan
+
+            if not np.isnan(true_vm) and true_vm != 0:
+                error_pct = (est_vm - true_vm) / true_vm * 100
+            else:
+                error_pct = np.nan
+
+            table_rows.append({
+                'bus': bus_idx,
+                'true_vm': true_vm,
+                'est_vm': est_vm,
+                'error_pct': error_pct,
+                'angle': angle
+            })
+
+        return table_rows
+
+    def _populate_results_table(self, rows):
+        """Populate the Treeview with state estimation values."""
+        for item in self.results_table.get_children():
+            self.results_table.delete(item)
+
+        def fmt(value, precision=4):
+            return f"{value:.{precision}f}" if value is not None and not np.isnan(value) else "N/A"
+
+        for row in rows:
+            self.results_table.insert(
+                "",
+                tk.END,
+                values=(
+                    row.get('bus', "N/A"),
+                    fmt(row.get('true_vm')),
+                    fmt(row.get('est_vm')),
+                    fmt(row.get('error_pct'), precision=2),
+                    fmt(row.get('angle'), precision=2)
+                )
+            )
+
+    def _update_results_table(self):
+        """Safely refresh the results table from a worker thread."""
+        rows = self._prepare_results_table_data()
+        self.root.after(0, lambda: self._populate_results_table(rows))
     
     def visualize_grid(self):
         """Visualize grid results"""
