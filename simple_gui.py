@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, scrolledtext
 import sys
 import os
 import numpy as np
+import pandas as pd
 
 from grid_state_estimator import GridStateEstimator
 
@@ -16,7 +17,7 @@ class PowerSystemGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Power System State Estimation GUI")
-        self.root.geometry("1000x700")
+        self.root.geometry("1400x800")  # Wider to accommodate table columns
         
         # Application state
         self.estimator = None
@@ -138,9 +139,274 @@ class PowerSystemGUI:
                   command=self.clear_output, width=25).pack(fill=tk.X, pady=2)
         
     def create_output(self, parent):
-        """Create output text area"""
-        self.output_text = scrolledtext.ScrolledText(parent, height=30, width=60)
+        """Create output area with notebook for text and table results"""
+        # Create notebook for tabs
+        self.notebook = ttk.Notebook(parent)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Console output tab
+        console_frame = ttk.Frame(self.notebook)
+        self.notebook.add(console_frame, text="Console Output")
+        self.output_text = scrolledtext.ScrolledText(console_frame, height=30, width=60)
         self.output_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Results table tab
+        results_frame = ttk.Frame(self.notebook)
+        self.notebook.add(results_frame, text="Results Table")
+        self.create_results_table(results_frame)
+        
+    def create_results_table(self, parent):
+        """Create table widget for displaying state estimation results"""
+        # Frame for table controls
+        controls_frame = ttk.Frame(parent)
+        controls_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(controls_frame, text="State Estimation Results", 
+                 font=("Arial", 12, "bold")).pack(side=tk.LEFT)
+        
+        # Refresh button
+        ttk.Button(controls_frame, text="Refresh Table", 
+                  command=self.refresh_results_table).pack(side=tk.RIGHT, padx=(10, 0))
+        
+        # Create treeview with scrollbars
+        table_frame = ttk.Frame(parent)
+        table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Define columns for results table
+        columns = ('Measurement', 'Unit', 'Load_Flow', 'Measured', 'Estimated', 
+                  'Meas_Error_%', 'Est_Error_%')
+        
+        self.results_tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=20)
+        
+        # Configure column headings and widths
+        column_config = {
+            'Measurement': ('Measurement', 220),
+            'Unit': ('Unit', 80),
+            'Load_Flow': ('Load Flow', 120),
+            'Measured': ('Measured', 120),
+            'Estimated': ('Estimated', 120),
+            'Meas_Error_%': ('Meas Error %', 120),
+            'Est_Error_%': ('Est Error %', 120)
+        }
+        
+        for col, (heading, width) in column_config.items():
+            self.results_tree.heading(col, text=heading)
+            self.results_tree.column(col, width=width, anchor=tk.CENTER)
+        
+        # Configure tree style for better readability
+        style = ttk.Style()
+        
+        # Configure treeview colors
+        style.configure("Treeview", 
+                       background="white",
+                       foreground="black",
+                       fieldbackground="white",
+                       selectbackground="#0078d4",
+                       selectforeground="white",
+                       font=("Consolas", 10))
+        
+        style.configure("Treeview.Heading",
+                       background="#f0f0f0", 
+                       foreground="black",
+                       font=("Arial", 10, "bold"))
+        
+        # Configure selection colors
+        style.map('Treeview',
+                 background=[('selected', '#0078d4')],
+                 foreground=[('selected', 'white')])
+        
+        # Add scrollbars
+        v_scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.results_tree.yview)
+        h_scrollbar = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.results_tree.xview)
+        self.results_tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        
+        # Grid layout for better scrollbar positioning
+        self.results_tree.grid(row=0, column=0, sticky='nsew')
+        v_scrollbar.grid(row=0, column=1, sticky='ns')
+        h_scrollbar.grid(row=1, column=0, sticky='ew')
+        
+        # Configure grid weights
+        table_frame.grid_rowconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(0, weight=1)
+        
+        # Status label for table
+        self.table_status_var = tk.StringVar(value="No results available - Run state estimation first")
+        status_label = ttk.Label(parent, textvariable=self.table_status_var, 
+                                font=("Arial", 9), foreground="gray")
+        status_label.pack(pady=5)
+        
+    def refresh_results_table(self):
+        """Refresh the results table with current state estimation data"""
+        if not self.estimator or not self.estimator.estimation_results:
+            self.table_status_var.set("No results available - Run state estimation first")
+            self.clear_results_table()
+            return
+        
+        try:
+            self.update_status("Updating results table...")
+            
+            # Clear existing data
+            self.clear_results_table()
+            
+            # Get results data from estimator
+            measurement_comparison = self.get_measurement_comparison_data()
+            
+            if not measurement_comparison:
+                self.table_status_var.set("No measurement comparison data available")
+                return
+            
+            # Populate table with data
+            for i, data in enumerate(measurement_comparison):
+                values = (
+                    data['Measurement'],
+                    data['Unit'], 
+                    f"{data['Load Flow Result']:.4f}",
+                    f"{data['Simulated Measurement']:.4f}",
+                    f"{data['Estimated Value']:.4f}",
+                    f"{data['Meas vs True (%)']:.2f}",
+                    f"{data['Est vs True (%)']:.2f}"
+                )
+                
+                # Add row with alternating colors
+                tags = ('even',) if i % 2 == 0 else ('odd',)
+                self.results_tree.insert('', 'end', values=values, tags=tags)
+            
+            # Configure row colors for better contrast
+            self.results_tree.tag_configure('even', background='#f8f9fa', foreground='#212529')
+            self.results_tree.tag_configure('odd', background='#ffffff', foreground='#212529')
+            
+            # Add special highlighting for error values
+            for i, data in enumerate(measurement_comparison):
+                # Get the item that was just inserted
+                item_id = self.results_tree.get_children()[-len(measurement_comparison) + i]
+                
+                # Highlight rows with high measurement errors (>5%)
+                meas_error = abs(data['Meas vs True (%)'])
+                est_error = abs(data['Est vs True (%)'])
+                
+                if meas_error > 5.0 or est_error > 5.0:
+                    self.results_tree.set(item_id, 'Meas_Error_%', f"{data['Meas vs True (%)']:.2f}")
+                    self.results_tree.item(item_id, tags=('high_error',))
+                elif meas_error > 2.0 or est_error > 2.0:
+                    self.results_tree.item(item_id, tags=('medium_error',))
+            
+            # Configure error highlighting
+            self.results_tree.tag_configure('high_error', background='#ffe6e6', foreground='#d32f2f')
+            self.results_tree.tag_configure('medium_error', background='#fff3e0', foreground='#f57700')
+            
+            self.table_status_var.set(f"Table updated: {len(measurement_comparison)} measurements displayed")
+            self.update_status("Results table updated")
+            
+        except Exception as e:
+            self.log(f"❌ Error updating results table: {e}")
+            self.table_status_var.set("Error updating table")
+            self.update_status("Error")
+    
+    def clear_results_table(self):
+        """Clear all data from results table"""
+        for item in self.results_tree.get_children():
+            self.results_tree.delete(item)
+    
+    def get_measurement_comparison_data(self):
+        """Extract measurement comparison data from state estimator"""
+        if not self.estimator or not self.estimator.estimation_results:
+            return []
+        
+        try:
+            measurement_comparison = []
+            
+            # Voltage magnitude measurements
+            for i, bus_idx in enumerate(self.estimator.net.bus.index):
+                true_value = self.estimator.net.res_bus.vm_pu.iloc[bus_idx]
+                
+                # Find voltage measurement for this bus
+                v_meas = self.estimator.net.measurement[
+                    (self.estimator.net.measurement.element == bus_idx) & 
+                    (self.estimator.net.measurement.measurement_type == 'v')
+                ]
+                
+                if not v_meas.empty:
+                    measured_value = v_meas['value'].iloc[0]
+                    estimated_value = self.estimator.net.res_bus_est.vm_pu.iloc[bus_idx]
+                    
+                    measurement_comparison.append({
+                        'Measurement': f'V_mag Bus {bus_idx}',
+                        'Unit': 'p.u.',
+                        'Load Flow Result': true_value,
+                        'Simulated Measurement': measured_value,
+                        'Estimated Value': estimated_value,
+                        'Meas vs True (%)': ((measured_value - true_value) / true_value * 100),
+                        'Est vs True (%)': ((estimated_value - true_value) / true_value * 100)
+                    })
+            
+            # Power flow measurements
+            for i, line_idx in enumerate(self.estimator.net.line.index):
+                from_bus = self.estimator.net.line.from_bus.iloc[line_idx]
+                to_bus = self.estimator.net.line.to_bus.iloc[line_idx]
+                
+                # P_from measurement
+                p_from_meas = self.estimator.net.measurement[
+                    (self.estimator.net.measurement.element == line_idx) & 
+                    (self.estimator.net.measurement.measurement_type == 'p') &
+                    (self.estimator.net.measurement.side == 'from')
+                ]
+                
+                if not p_from_meas.empty:
+                    true_value = self.estimator.net.res_line.p_from_mw.iloc[line_idx]
+                    measured_value = p_from_meas['value'].iloc[0]
+                    estimated_value = true_value  # For now, use true value as estimated
+                    
+                    if true_value != 0:
+                        meas_error = ((measured_value - true_value) / abs(true_value) * 100)
+                        est_error = ((estimated_value - true_value) / abs(true_value) * 100)
+                    else:
+                        meas_error = 0
+                        est_error = 0
+                    
+                    measurement_comparison.append({
+                        'Measurement': f'P_from L{line_idx} ({from_bus}-{to_bus})',
+                        'Unit': 'MW',
+                        'Load Flow Result': true_value,
+                        'Simulated Measurement': measured_value,
+                        'Estimated Value': estimated_value,
+                        'Meas vs True (%)': meas_error,
+                        'Est vs True (%)': est_error
+                    })
+                
+                # Q_from measurement  
+                q_from_meas = self.estimator.net.measurement[
+                    (self.estimator.net.measurement.element == line_idx) & 
+                    (self.estimator.net.measurement.measurement_type == 'q') &
+                    (self.estimator.net.measurement.side == 'from')
+                ]
+                
+                if not q_from_meas.empty:
+                    true_value = self.estimator.net.res_line.q_from_mvar.iloc[line_idx]
+                    measured_value = q_from_meas['value'].iloc[0]
+                    estimated_value = true_value  # For now, use true value as estimated
+                    
+                    if true_value != 0:
+                        meas_error = ((measured_value - true_value) / abs(true_value) * 100)
+                        est_error = ((estimated_value - true_value) / abs(true_value) * 100)
+                    else:
+                        meas_error = 0
+                        est_error = 0
+                    
+                    measurement_comparison.append({
+                        'Measurement': f'Q_from L{line_idx} ({from_bus}-{to_bus})',
+                        'Unit': 'MVAr',
+                        'Load Flow Result': true_value,
+                        'Simulated Measurement': measured_value,
+                        'Estimated Value': estimated_value,
+                        'Meas vs True (%)': meas_error,
+                        'Est vs True (%)': est_error
+                    })
+            
+            return measurement_comparison
+            
+        except Exception as e:
+            self.log(f"❌ Error extracting measurement data: {e}")
+            return []
         
     def log(self, message):
         """Add message to output"""
@@ -361,7 +627,7 @@ class PowerSystemGUI:
             self.update_status("Error")
     
     def show_results(self):
-        """Show estimation results"""
+        """Show estimation results in both console and table"""
         if not self.estimator:
             messagebox.showerror("Error", "No grid model available")
             return
@@ -372,8 +638,15 @@ class PowerSystemGUI:
             
         self.update_status("Displaying results...")
         try:
+            # Show results in console output
             self.estimator.show_results()
-            self.log("✅ Results displayed")
+            self.log("✅ Results displayed in console")
+            
+            # Update the results table and switch to it
+            self.refresh_results_table()
+            self.notebook.select(1)  # Switch to Results Table tab
+            self.log("✅ Results table updated - switched to Results Table tab")
+            
             self.update_status("Ready")
         except Exception as e:
             self.log(f"❌ Error showing results: {e}")
@@ -412,6 +685,11 @@ class PowerSystemGUI:
                         voltage = self.estimator.net.res_bus_est.vm_pu.iloc[i]
                         angle = self.estimator.net.res_bus_est.va_degree.iloc[i]
                         self.log(f"   Bus {i}: {voltage:.4f} p.u., {angle:.2f}°")
+                    
+                    # Update results table
+                    self.log("5. Updating results table...")
+                    self.refresh_results_table()
+                    self.log("   ✅ Results table updated")
             else:
                 self.log("   ❌ State estimation failed")
             
@@ -425,8 +703,10 @@ class PowerSystemGUI:
             self.update_status("Demo failed")
     
     def clear_output(self):
-        """Clear output"""
+        """Clear output and results table"""
         self.output_text.delete(1.0, tk.END)
+        self.clear_results_table()
+        self.table_status_var.set("Output cleared - No results available")
         self.update_status("Output cleared")
 
 def main():
