@@ -10,6 +10,9 @@ import sys
 import os
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
 
 from grid_state_estimator import GridStateEstimator
 
@@ -127,12 +130,20 @@ class PowerSystemGUI:
                   command=self.detect_bad_data, width=25).pack(fill=tk.X, pady=2)
         ttk.Button(parent, text="Show Results", 
                   command=self.show_results, width=25).pack(fill=tk.X, pady=2)
+        ttk.Button(parent, text="Show Grid Plot", 
+                  command=self.show_grid_plot, width=25).pack(fill=tk.X, pady=2)
         
         # Separator
         ttk.Separator(parent, orient='horizontal').pack(fill=tk.X, pady=10)
         
         # Demo and Utilities
         ttk.Label(parent, text="Demos & Utils:", font=("Arial", 10, "bold")).pack(anchor=tk.W, pady=(0, 5))
+        
+        # Auto-refresh setting
+        self.auto_refresh_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(parent, text="Auto-refresh plots/results", 
+                       variable=self.auto_refresh_var).pack(anchor=tk.W, pady=2)
+        
         ttk.Button(parent, text="Quick Demo", 
                   command=self.quick_demo, width=25).pack(fill=tk.X, pady=2)
         ttk.Button(parent, text="Clear Output", 
@@ -154,6 +165,16 @@ class PowerSystemGUI:
         results_frame = ttk.Frame(self.notebook)
         self.notebook.add(results_frame, text="Results Table")
         self.create_results_table(results_frame)
+        
+        # Grid visualization tab
+        viz_frame = ttk.Frame(self.notebook)
+        self.notebook.add(viz_frame, text="Grid Visualization")
+        self.create_grid_visualization(viz_frame)
+        
+        # Switch control tab
+        switch_frame = ttk.Frame(self.notebook)
+        self.notebook.add(switch_frame, text="Switch Control")
+        self.create_switch_control(switch_frame)
         
     def create_results_table(self, parent):
         """Create table widget for displaying state estimation results"""
@@ -234,6 +255,774 @@ class PowerSystemGUI:
         status_label = ttk.Label(parent, textvariable=self.table_status_var, 
                                 font=("Arial", 9), foreground="gray")
         status_label.pack(pady=5)
+        
+    def create_grid_visualization(self, parent):
+        """Create grid visualization with matplotlib canvas and controls"""
+        # Control panel at top
+        control_panel = ttk.Frame(parent)
+        control_panel.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Title and refresh button
+        title_frame = ttk.Frame(control_panel)
+        title_frame.pack(fill=tk.X)
+        
+        ttk.Label(title_frame, text="Grid Network Visualization", 
+                 font=("Arial", 12, "bold")).pack(side=tk.LEFT)
+        
+        ttk.Button(title_frame, text="Refresh Plot", 
+                  command=self.refresh_grid_plot).pack(side=tk.RIGHT)
+        
+        # Visualization options
+        options_frame = ttk.LabelFrame(control_panel, text="Display Options", padding="5")
+        options_frame.pack(fill=tk.X, pady=5)
+        
+        # Create checkbutton variables
+        self.show_voltage_magnitudes = tk.BooleanVar(value=True)
+        self.show_voltage_errors = tk.BooleanVar(value=True)
+        self.show_power_flows = tk.BooleanVar(value=True)
+        self.show_measurement_locations = tk.BooleanVar(value=True)
+        self.show_bus_labels = tk.BooleanVar(value=True)
+        self.show_line_labels = tk.BooleanVar(value=False)
+        
+        # Arrange checkboxes in columns
+        left_frame = ttk.Frame(options_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        right_frame = ttk.Frame(options_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # Left column checkboxes
+        ttk.Checkbutton(left_frame, text="Voltage Magnitudes", 
+                       variable=self.show_voltage_magnitudes,
+                       command=self.on_display_option_change).pack(anchor=tk.W)
+        ttk.Checkbutton(left_frame, text="Voltage Errors", 
+                       variable=self.show_voltage_errors,
+                       command=self.on_display_option_change).pack(anchor=tk.W)
+        ttk.Checkbutton(left_frame, text="Power Flows", 
+                       variable=self.show_power_flows,
+                       command=self.on_display_option_change).pack(anchor=tk.W)
+        
+        # Right column checkboxes
+        ttk.Checkbutton(right_frame, text="Measurement Locations", 
+                       variable=self.show_measurement_locations,
+                       command=self.on_display_option_change).pack(anchor=tk.W)
+        ttk.Checkbutton(right_frame, text="Bus Labels", 
+                       variable=self.show_bus_labels,
+                       command=self.on_display_option_change).pack(anchor=tk.W)
+        ttk.Checkbutton(right_frame, text="Line Labels", 
+                       variable=self.show_line_labels,
+                       command=self.on_display_option_change).pack(anchor=tk.W)
+        
+        # Plot type selection
+        plot_type_frame = ttk.Frame(options_frame)
+        plot_type_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(plot_type_frame, text="Plot Type:").pack(side=tk.LEFT)
+        self.plot_type_var = tk.StringVar(value="comprehensive")
+        plot_type_combo = ttk.Combobox(plot_type_frame, textvariable=self.plot_type_var,
+                                      values=["comprehensive", "network_only", "custom"],
+                                      state="readonly", width=15)
+        plot_type_combo.pack(side=tk.LEFT, padx=5)
+        plot_type_combo.bind("<<ComboboxSelected>>", self.on_plot_type_change)
+        
+        # Matplotlib figure and canvas
+        self.grid_figure = Figure(figsize=(12, 8), dpi=100)
+        self.grid_canvas = FigureCanvasTkAgg(self.grid_figure, parent)
+        self.grid_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Navigation toolbar
+        toolbar_frame = ttk.Frame(parent)
+        toolbar_frame.pack(fill=tk.X)
+        self.grid_toolbar = NavigationToolbar2Tk(self.grid_canvas, toolbar_frame)
+        self.grid_toolbar.update()
+        
+        # Status for grid plot
+        self.grid_plot_status_var = tk.StringVar(value="No grid available - Create a grid model first")
+        grid_status_label = ttk.Label(parent, textvariable=self.grid_plot_status_var, 
+                                     font=("Arial", 9), foreground="gray")
+        grid_status_label.pack(pady=5)
+        
+        # Initialize with empty plot
+        self.clear_grid_plot()
+        
+    def refresh_grid_plot(self):
+        """Refresh the grid visualization plot"""
+        if not self.estimator or not hasattr(self.estimator, 'net') or self.estimator.net is None:
+            self.grid_plot_status_var.set("No grid available - Create a grid model first")
+            self.clear_grid_plot()
+            return
+        
+        try:
+            self.update_status("Updating grid visualization...")
+            
+            # Clear the figure
+            self.grid_figure.clear()
+            
+            plot_type = self.plot_type_var.get()
+            
+            if plot_type == "comprehensive":
+                self.create_comprehensive_plot()
+            elif plot_type == "network_only":
+                self.create_network_only_plot()
+            else:  # custom
+                self.create_custom_plot()
+            
+            # Update canvas
+            self.grid_canvas.draw()
+            
+            # Update status
+            total_elements = len(self.estimator.net.bus) + len(self.estimator.net.line)
+            self.grid_plot_status_var.set(f"Grid visualization updated - {total_elements} network elements")
+            self.update_status("Grid plot updated")
+            
+        except Exception as e:
+            self.log(f"❌ Error updating grid plot: {e}")
+            self.grid_plot_status_var.set("Error updating grid plot")
+            self.clear_grid_plot()
+            self.update_status("Error")
+    
+    def create_comprehensive_plot(self):
+        """Create comprehensive 2x2 subplot grid visualization"""
+        if not self.estimator.estimation_results:
+            self.create_network_only_plot()
+            return
+            
+        # Create 2x2 subplots
+        axs = self.grid_figure.subplots(2, 2)
+        self.grid_figure.suptitle(f'{self.current_grid} Grid - Comprehensive Analysis', fontsize=14, fontweight='bold')
+        
+        # Get bus positions
+        try:
+            positions = self.estimator._create_bus_positions()
+        except:
+            positions = self.create_default_positions()
+        
+        # Plot 1: Voltage Magnitudes
+        if self.show_voltage_magnitudes.get():
+            self.estimator._plot_voltage_magnitudes_on_grid(axs[0, 0])
+            axs[0, 0].set_title('Voltage Magnitudes')
+        else:
+            self.plot_basic_network(axs[0, 0], positions, "Voltage Magnitudes (Disabled)")
+        
+        # Plot 2: Voltage Errors
+        if self.show_voltage_errors.get() and self.estimator.estimation_results:
+            self.estimator._plot_voltage_errors_on_grid(axs[0, 1])
+            axs[0, 1].set_title('Voltage Estimation Errors')
+        else:
+            self.plot_basic_network(axs[0, 1], positions, "Voltage Errors (Disabled/No Results)")
+        
+        # Plot 3: Power Flows
+        if self.show_power_flows.get():
+            self.estimator._plot_power_flows_on_grid(axs[1, 0])
+            axs[1, 0].set_title('Active Power Flows')
+        else:
+            self.plot_basic_network(axs[1, 0], positions, "Power Flows (Disabled)")
+        
+        # Plot 4: Measurement Locations
+        if self.show_measurement_locations.get():
+            self.estimator._plot_measurement_locations(axs[1, 1])
+            axs[1, 1].set_title('Measurement Locations')
+        else:
+            self.plot_basic_network(axs[1, 1], positions, "Measurements (Disabled)")
+        
+        self.grid_figure.tight_layout()
+        
+    def create_network_only_plot(self):
+        """Create single network topology plot"""
+        ax = self.grid_figure.add_subplot(111)
+        
+        try:
+            positions = self.estimator._create_bus_positions()
+        except:
+            positions = self.create_default_positions()
+        
+        self.plot_basic_network(ax, positions, f'{self.current_grid} Grid - Network Topology')
+        
+    def create_custom_plot(self):
+        """Create custom plot based on selected options"""
+        # Count enabled options
+        enabled_options = sum([
+            self.show_voltage_magnitudes.get(),
+            self.show_voltage_errors.get() and bool(self.estimator.estimation_results),
+            self.show_power_flows.get(),
+            self.show_measurement_locations.get()
+        ])
+        
+        if enabled_options == 0:
+            self.create_network_only_plot()
+            return
+        elif enabled_options == 1:
+            # Single plot
+            ax = self.grid_figure.add_subplot(111)
+            
+            if self.show_voltage_magnitudes.get():
+                self.estimator._plot_voltage_magnitudes_on_grid(ax)
+                ax.set_title('Voltage Magnitudes')
+            elif self.show_voltage_errors.get() and self.estimator.estimation_results:
+                self.estimator._plot_voltage_errors_on_grid(ax)
+                ax.set_title('Voltage Estimation Errors')
+            elif self.show_power_flows.get():
+                self.estimator._plot_power_flows_on_grid(ax)
+                ax.set_title('Active Power Flows')
+            elif self.show_measurement_locations.get():
+                self.estimator._plot_measurement_locations(ax)
+                ax.set_title('Measurement Locations')
+                
+        elif enabled_options == 2:
+            # 1x2 subplots
+            axs = self.grid_figure.subplots(1, 2)
+            plot_idx = 0
+            
+            if self.show_voltage_magnitudes.get():
+                self.estimator._plot_voltage_magnitudes_on_grid(axs[plot_idx])
+                axs[plot_idx].set_title('Voltage Magnitudes')
+                plot_idx += 1
+            
+            if self.show_voltage_errors.get() and self.estimator.estimation_results:
+                self.estimator._plot_voltage_errors_on_grid(axs[plot_idx])
+                axs[plot_idx].set_title('Voltage Errors')
+                plot_idx += 1
+            
+            if self.show_power_flows.get() and plot_idx < 2:
+                self.estimator._plot_power_flows_on_grid(axs[plot_idx])
+                axs[plot_idx].set_title('Power Flows')
+                plot_idx += 1
+            
+            if self.show_measurement_locations.get() and plot_idx < 2:
+                self.estimator._plot_measurement_locations(axs[plot_idx])
+                axs[plot_idx].set_title('Measurements')
+                
+        else:
+            # Multiple plots - use 2x2 grid
+            self.create_comprehensive_plot()
+            return
+        
+        self.grid_figure.tight_layout()
+    
+    def plot_basic_network(self, ax, positions, title):
+        """Plot basic network topology"""
+        if not positions:
+            ax.text(0.5, 0.5, 'No network topology available', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(title)
+            return
+        
+        # Plot buses
+        bus_x = [positions[bus][0] for bus in self.estimator.net.bus.index]
+        bus_y = [positions[bus][1] for bus in self.estimator.net.bus.index]
+        
+        ax.scatter(bus_x, bus_y, c='lightblue', s=300, alpha=0.7, edgecolors='black', linewidth=2)
+        
+        # Plot lines
+        try:
+            self.estimator._draw_transmission_lines(ax, positions, color='gray', linewidth=2)
+        except:
+            pass  # Skip if method not available
+        
+        # Add bus labels if enabled
+        if self.show_bus_labels.get():
+            for bus_idx in self.estimator.net.bus.index:
+                x, y = positions[bus_idx]
+                ax.annotate(f'Bus {bus_idx}', (x, y), xytext=(5, 5), 
+                           textcoords='offset points', fontsize=8)
+        
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect('equal')
+        
+    def create_default_positions(self):
+        """Create default bus positions if estimator method fails"""
+        if not self.estimator or not hasattr(self.estimator, 'net'):
+            return {}
+        
+        n_buses = len(self.estimator.net.bus)
+        positions = {}
+        
+        # Create simple circular layout
+        import math
+        for i, bus_idx in enumerate(self.estimator.net.bus.index):
+            angle = 2 * math.pi * i / n_buses
+            x = math.cos(angle)
+            y = math.sin(angle)
+            positions[bus_idx] = (x, y)
+            
+        return positions
+    
+    def clear_grid_plot(self):
+        """Clear the grid plot"""
+        self.grid_figure.clear()
+        ax = self.grid_figure.add_subplot(111)
+        ax.text(0.5, 0.5, 'No grid visualization available\n\nCreate a grid model and run state estimation to see plots', 
+               ha='center', va='center', transform=ax.transAxes, fontsize=12)
+        ax.set_title('Grid Visualization')
+        self.grid_canvas.draw()
+    
+    def on_display_option_change(self):
+        """Handle display option changes"""
+        if hasattr(self, 'estimator') and self.estimator:
+            self.refresh_grid_plot()
+    
+    def on_plot_type_change(self, event=None):
+        """Handle plot type changes"""
+        if hasattr(self, 'estimator') and self.estimator:
+            self.refresh_grid_plot()
+    
+    def auto_refresh_results_and_plots(self):
+        """Auto-refresh results table and grid plot if enabled"""
+        if not self.auto_refresh_var.get():
+            return  # Auto-refresh disabled
+        
+        try:
+            refreshed_items = []
+            
+            # Refresh results table if we have estimation results
+            if self.estimator and self.estimator.estimation_results:
+                self.refresh_results_table()
+                refreshed_items.append("results table")
+            
+            # Refresh grid plot if we have a grid model
+            if self.estimator and hasattr(self.estimator, 'net') and self.estimator.net is not None:
+                self.refresh_grid_plot()
+                refreshed_items.append("grid visualization")
+            
+            if refreshed_items:
+                self.log(f"🔄 Auto-refreshed: {', '.join(refreshed_items)}")
+                
+        except Exception as e:
+            self.log(f"❌ Auto-refresh error: {e}")
+    
+    def create_switch_control(self, parent):
+        """Create switch control interface with interactive network visualization"""
+        # Control panel at top
+        control_panel = ttk.Frame(parent)
+        control_panel.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Title and refresh button
+        title_frame = ttk.Frame(control_panel)
+        title_frame.pack(fill=tk.X)
+        
+        ttk.Label(title_frame, text="Network Switch Control", 
+                 font=("Arial", 12, "bold")).pack(side=tk.LEFT)
+        
+        ttk.Button(title_frame, text="Refresh Switches", 
+                  command=self.refresh_switch_display).pack(side=tk.RIGHT)
+        
+        # Create horizontal layout
+        main_frame = ttk.Frame(parent)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Left panel - Switch controls
+        left_panel = ttk.LabelFrame(main_frame, text="Switch Controls", padding="5")
+        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        
+        # Switch list with controls
+        switch_list_frame = ttk.Frame(left_panel)
+        switch_list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create treeview for switches
+        columns = ('Name', 'Type', 'Status')
+        self.switch_tree = ttk.Treeview(switch_list_frame, columns=columns, show='headings', height=15)
+        
+        # Configure columns
+        self.switch_tree.heading('Name', text='Switch Name')
+        self.switch_tree.heading('Type', text='Type')
+        self.switch_tree.heading('Status', text='Status')
+        
+        self.switch_tree.column('Name', width=200)
+        self.switch_tree.column('Type', width=80)
+        self.switch_tree.column('Status', width=80)
+        
+        # Style the treeview
+        style = ttk.Style()
+        style.configure("Switch.Treeview", font=("Consolas", 9))
+        self.switch_tree.configure(style="Switch.Treeview")
+        
+        # Add scrollbar for switch list
+        switch_scrollbar = ttk.Scrollbar(switch_list_frame, orient=tk.VERTICAL, command=self.switch_tree.yview)
+        self.switch_tree.configure(yscrollcommand=switch_scrollbar.set)
+        
+        # Grid layout for switch list
+        self.switch_tree.grid(row=0, column=0, sticky='nsew')
+        switch_scrollbar.grid(row=0, column=1, sticky='ns')
+        
+        switch_list_frame.grid_rowconfigure(0, weight=1)
+        switch_list_frame.grid_columnconfigure(0, weight=1)
+        
+        # Switch operation buttons
+        button_frame = ttk.Frame(left_panel)
+        button_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(button_frame, text="Open Switch", 
+                  command=self.open_selected_switch).pack(side=tk.LEFT, padx=2)
+        ttk.Button(button_frame, text="Close Switch", 
+                  command=self.close_selected_switch).pack(side=tk.LEFT, padx=2)
+        ttk.Button(button_frame, text="Toggle", 
+                  command=self.toggle_selected_switch).pack(side=tk.LEFT, padx=2)
+        
+        # Emergency operations
+        emergency_frame = ttk.LabelFrame(left_panel, text="Emergency Operations", padding="5")
+        emergency_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(emergency_frame, text="Open All Switches", 
+                  command=self.open_all_switches).pack(fill=tk.X, pady=2)
+        ttk.Button(emergency_frame, text="Close All Switches", 
+                  command=self.close_all_switches).pack(fill=tk.X, pady=2)
+        ttk.Button(emergency_frame, text="Reset to Normal", 
+                  command=self.reset_switches_to_normal).pack(fill=tk.X, pady=2)
+        
+        # Right panel - Interactive network plot
+        right_panel = ttk.LabelFrame(main_frame, text="Interactive Network View", padding="5")
+        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # Matplotlib figure for switch visualization
+        self.switch_figure = Figure(figsize=(10, 8), dpi=100)
+        self.switch_canvas = FigureCanvasTkAgg(self.switch_figure, right_panel)
+        self.switch_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
+        # Navigation toolbar for switch plot
+        switch_toolbar_frame = ttk.Frame(right_panel)
+        switch_toolbar_frame.pack(fill=tk.X)
+        self.switch_toolbar = NavigationToolbar2Tk(self.switch_canvas, switch_toolbar_frame)
+        self.switch_toolbar.update()
+        
+        # Status for switch operations
+        self.switch_status_var = tk.StringVar(value="No grid available - Create a grid model first")
+        switch_status_label = ttk.Label(parent, textvariable=self.switch_status_var, 
+                                       font=("Arial", 9), foreground="gray")
+        switch_status_label.pack(pady=5)
+        
+        # Initialize with empty displays
+        self.clear_switch_display()
+        
+    def refresh_switch_display(self):
+        """Refresh the switch control display"""
+        if not self.estimator or not hasattr(self.estimator, 'net') or self.estimator.net is None:
+            self.switch_status_var.set("No grid available - Create a grid model first")
+            self.clear_switch_display()
+            return
+        
+        try:
+            self.update_status("Updating switch display...")
+            
+            # Get switch information
+            switch_info = self.estimator.get_switch_info()
+            
+            if not switch_info:
+                self.switch_status_var.set("No switches available in current grid model")
+                self.clear_switch_display()
+                return
+            
+            # Clear and populate switch list
+            self.clear_switch_list()
+            
+            for switch_data in switch_info:
+                status_color = "🟢" if switch_data['closed'] else "🔴"
+                status_text = f"{status_color} {switch_data['status']}"
+                
+                values = (
+                    switch_data['name'],
+                    switch_data['switch_type'],
+                    status_text
+                )
+                
+                # Add to treeview with switch index as item id
+                item_id = self.switch_tree.insert('', 'end', values=values, 
+                                                  tags=(str(switch_data['index']),))
+                
+                # Configure colors based on status
+                if switch_data['closed']:
+                    self.switch_tree.set(item_id, 'Status', status_text)
+                else:
+                    self.switch_tree.set(item_id, 'Status', status_text)
+            
+            # Update switch network plot
+            self.update_switch_network_plot()
+            
+            # Update status
+            self.switch_status_var.set(f"Switch display updated - {len(switch_info)} switches available")
+            self.update_status("Switch display updated")
+            
+        except Exception as e:
+            self.log(f"❌ Error updating switch display: {e}")
+            self.switch_status_var.set("Error updating switch display")
+            self.update_status("Error")
+    
+    def clear_switch_display(self):
+        """Clear the switch display"""
+        self.clear_switch_list()
+        
+        # Clear the switch plot
+        self.switch_figure.clear()
+        ax = self.switch_figure.add_subplot(111)
+        ax.text(0.5, 0.5, 'No switch visualization available\n\nCreate a grid model to see network switches', 
+               ha='center', va='center', transform=ax.transAxes, fontsize=12)
+        ax.set_title('Network Switch Control')
+        self.switch_canvas.draw()
+    
+    def clear_switch_list(self):
+        """Clear the switch list"""
+        for item in self.switch_tree.get_children():
+            self.switch_tree.delete(item)
+    
+    def get_selected_switch_index(self):
+        """Get the index of the currently selected switch"""
+        selection = self.switch_tree.selection()
+        if not selection:
+            return None
+        
+        # Get switch index from item tags
+        item = selection[0]
+        tags = self.switch_tree.item(item, 'tags')
+        if tags:
+            try:
+                return int(tags[0])
+            except (ValueError, IndexError):
+                pass
+        return None
+    
+    def open_selected_switch(self):
+        """Open the selected switch"""
+        switch_index = self.get_selected_switch_index()
+        if switch_index is None:
+            self.log("❌ No switch selected")
+            return
+        
+        self.operate_switch(switch_index, force_state=False)
+    
+    def close_selected_switch(self):
+        """Close the selected switch"""
+        switch_index = self.get_selected_switch_index()
+        if switch_index is None:
+            self.log("❌ No switch selected")
+            return
+        
+        self.operate_switch(switch_index, force_state=True)
+    
+    def toggle_selected_switch(self):
+        """Toggle the selected switch"""
+        switch_index = self.get_selected_switch_index()
+        if switch_index is None:
+            self.log("❌ No switch selected")
+            return
+        
+        self.operate_switch(switch_index)
+    
+    def operate_switch(self, switch_index, force_state=None):
+        """Operate a switch and update displays"""
+        if not self.estimator:
+            return
+        
+        try:
+            # Get switch info before operation
+            switch_info = self.estimator.get_switch_info()
+            switch_data = next((s for s in switch_info if s['index'] == switch_index), None)
+            
+            if not switch_data:
+                self.log(f"❌ Switch {switch_index} not found")
+                return
+            
+            old_state = "CLOSED" if switch_data['closed'] else "OPEN"
+            
+            # Perform switch operation
+            success = self.estimator.toggle_switch(switch_index, force_state)
+            
+            if success:
+                new_state = "CLOSED" if force_state else ("OPEN" if force_state == False else ("OPEN" if switch_data['closed'] else "CLOSED"))
+                self.log(f"✅ {switch_data['name']}: {old_state} → {new_state}")
+                
+                # Auto-refresh displays
+                self.refresh_switch_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+                
+            else:
+                self.log(f"❌ Failed to operate {switch_data['name']} - Power flow unstable")
+                
+        except Exception as e:
+            self.log(f"❌ Switch operation error: {e}")
+    
+    def open_all_switches(self):
+        """Emergency operation: Open all switches"""
+        if not self.estimator:
+            return
+        
+        try:
+            switch_info = self.estimator.get_switch_info()
+            opened_count = 0
+            
+            for switch_data in switch_info:
+                if switch_data['closed']:  # Only operate closed switches
+                    success = self.estimator.toggle_switch(switch_data['index'], force_state=False)
+                    if success:
+                        opened_count += 1
+                    else:
+                        # If any switch operation fails, log it but continue
+                        self.log(f"⚠️ Failed to open {switch_data['name']}")
+            
+            self.log(f"🚨 Emergency operation: Opened {opened_count} switches")
+            self.refresh_switch_display()
+            
+        except Exception as e:
+            self.log(f"❌ Emergency operation error: {e}")
+    
+    def close_all_switches(self):
+        """Operation: Close all switches to normal state"""
+        if not self.estimator:
+            return
+        
+        try:
+            switch_info = self.estimator.get_switch_info()
+            closed_count = 0
+            
+            for switch_data in switch_info:
+                if not switch_data['closed']:  # Only operate open switches
+                    success = self.estimator.toggle_switch(switch_data['index'], force_state=True)
+                    if success:
+                        closed_count += 1
+                    else:
+                        self.log(f"⚠️ Failed to close {switch_data['name']}")
+            
+            self.log(f"✅ Closed {closed_count} switches - Network restored")
+            self.refresh_switch_display()
+            
+        except Exception as e:
+            self.log(f"❌ Close all operation error: {e}")
+    
+    def reset_switches_to_normal(self):
+        """Reset all switches to their normal (closed) state"""
+        self.close_all_switches()
+        
+    def update_switch_network_plot(self):
+        """Update the network plot showing switch states"""
+        if not self.estimator or not hasattr(self.estimator, 'net'):
+            return
+        
+        try:
+            # Clear the figure
+            self.switch_figure.clear()
+            ax = self.switch_figure.add_subplot(111)
+            
+            # Get bus positions
+            try:
+                positions = self.estimator._create_bus_positions()
+            except:
+                positions = self.create_default_positions()
+            
+            if not positions:
+                ax.text(0.5, 0.5, 'Network topology not available', 
+                       ha='center', va='center', transform=ax.transAxes)
+                self.switch_canvas.draw()
+                return
+            
+            # Plot buses
+            bus_x = [positions[bus][0] for bus in self.estimator.net.bus.index]
+            bus_y = [positions[bus][1] for bus in self.estimator.net.bus.index]
+            
+            ax.scatter(bus_x, bus_y, c='lightblue', s=400, alpha=0.7, 
+                      edgecolors='black', linewidth=2, label='Buses')
+            
+            # Plot transmission lines with switch status
+            self.plot_lines_with_switches(ax, positions)
+            
+            # Plot switches as symbols
+            self.plot_switch_symbols(ax, positions)
+            
+            # Add bus labels
+            for bus_idx in self.estimator.net.bus.index:
+                x, y = positions[bus_idx]
+                ax.annotate(f'Bus {bus_idx}', (x, y), xytext=(5, 5), 
+                           textcoords='offset points', fontsize=8, fontweight='bold')
+            
+            ax.set_title(f'{self.current_grid} - Network Switch Status', fontsize=12, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            ax.set_aspect('equal')
+            ax.legend()
+            
+            self.switch_canvas.draw()
+            
+        except Exception as e:
+            self.log(f"❌ Error updating switch network plot: {e}")
+    
+    def plot_lines_with_switches(self, ax, positions):
+        """Plot transmission lines with different styles based on switch status"""
+        if not hasattr(self.estimator.net, 'switch') or len(self.estimator.net.switch) == 0:
+            # No switches, plot all lines normally
+            try:
+                self.estimator._draw_transmission_lines(ax, positions, color='gray', linewidth=2)
+            except:
+                pass
+            return
+        
+        # Get switch information grouped by element
+        switch_info = self.estimator.get_switch_info()
+        line_switch_status = {}
+        
+        for switch in switch_info:
+            if switch['type'] == 'l':  # Line switches
+                element_idx = switch['element']
+                if element_idx not in line_switch_status:
+                    line_switch_status[element_idx] = []
+                line_switch_status[element_idx].append(switch['closed'])
+        
+        # Plot lines with appropriate styling
+        for line_idx in self.estimator.net.line.index:
+            from_bus = self.estimator.net.line.from_bus.iloc[line_idx]
+            to_bus = self.estimator.net.line.to_bus.iloc[line_idx]
+            
+            if from_bus in positions and to_bus in positions:
+                x1, y1 = positions[from_bus]
+                x2, y2 = positions[to_bus]
+                
+                # Determine line style based on switch status
+                if line_idx in line_switch_status:
+                    # Line has switches
+                    all_closed = all(line_switch_status[line_idx])
+                    if all_closed:
+                        # All switches closed - normal operation
+                        ax.plot([x1, x2], [y1, y2], 'g-', linewidth=3, alpha=0.8, label='Energized Line')
+                    else:
+                        # Some switches open - line de-energized
+                        ax.plot([x1, x2], [y1, y2], 'r--', linewidth=2, alpha=0.6, label='De-energized Line')
+                else:
+                    # No switches on this line
+                    ax.plot([x1, x2], [y1, y2], 'gray', linewidth=2, alpha=0.7, label='No Switches')
+    
+    def plot_switch_symbols(self, ax, positions):
+        """Plot switch symbols on the network"""
+        if not hasattr(self.estimator.net, 'switch') or len(self.estimator.net.switch) == 0:
+            return
+        
+        switch_info = self.estimator.get_switch_info()
+        
+        for switch in switch_info:
+            try:
+                bus_idx = switch['bus']
+                if bus_idx not in positions:
+                    continue
+                
+                x, y = positions[bus_idx]
+                
+                # Offset switch symbol slightly from bus
+                offset = 0.05
+                sx = x + offset
+                sy = y + offset
+                
+                if switch['closed']:
+                    # Closed switch - solid square
+                    ax.scatter([sx], [sy], c='green', s=100, marker='s', 
+                             edgecolors='darkgreen', linewidth=2, label='Closed Switch')
+                else:
+                    # Open switch - open square
+                    ax.scatter([sx], [sy], c='white', s=100, marker='s', 
+                             edgecolors='red', linewidth=2, label='Open Switch')
+                
+                # Add switch label
+                ax.annotate(switch['switch_type'], (sx, sy), xytext=(-10, -15), 
+                           textcoords='offset points', fontsize=6, ha='center')
+                           
+            except Exception as e:
+                # Skip problematic switches
+                continue
         
     def refresh_results_table(self):
         """Refresh the results table with current state estimation data"""
@@ -444,6 +1233,13 @@ class PowerSystemGUI:
             self.log(f"   Lines: {len(self.estimator.net.line)}")
             self.log(f"   Generators: {len(self.estimator.net.gen)}")
             self.update_grid_info()
+            
+            # Auto-refresh grid plot and switch display (new grid created)
+            if self.auto_refresh_var.get():
+                self.refresh_grid_plot()
+                self.refresh_switch_display()
+                self.log("🔄 Auto-refreshed grid visualization and switch control")
+                
             self.update_status("IEEE 9-bus grid ready")
         except Exception as e:
             self.log(f"❌ Error creating IEEE 9-bus grid: {e}")
@@ -461,6 +1257,13 @@ class PowerSystemGUI:
             self.log(f"   Lines: {len(self.estimator.net.line)}")
             self.log(f"   Generators: {len(self.estimator.net.gen)}")
             self.update_grid_info()
+            
+            # Auto-refresh grid plot and switch display (new grid created)
+            if self.auto_refresh_var.get():
+                self.refresh_grid_plot()
+                self.refresh_switch_display()
+                self.log("🔄 Auto-refreshed grid visualization and switch control")
+                
             self.update_status("ENTSO-E grid ready")
         except Exception as e:
             self.log(f"❌ Error creating ENTSO-E grid: {e}")
@@ -479,6 +1282,12 @@ class PowerSystemGUI:
             self.log(f"✅ Generated {len(self.estimator.net.measurement)} measurements")
             self.log(f"   Noise level: {noise_level*100:.1f}%")
             self.update_grid_info()
+            
+            # Auto-refresh plots (measurements affect grid visualization)
+            if self.auto_refresh_var.get():
+                self.refresh_grid_plot()
+                self.log("🔄 Auto-refreshed grid visualization")
+            
             self.update_status("Measurements ready")
         except ValueError:
             self.log("❌ Invalid noise level")
@@ -529,6 +1338,11 @@ class PowerSystemGUI:
             success = self.estimator.modify_bus_voltage_measurement(bus_id, voltage)
             if success:
                 self.log(f"✅ Bus {bus_id} voltage set to {voltage:.4f} p.u.")
+                
+                # Auto-refresh plots (voltage modification affects visualization)
+                if self.auto_refresh_var.get():
+                    self.refresh_grid_plot()
+                    self.log("🔄 Auto-refreshed grid visualization")
             else:
                 self.log(f"❌ Failed to modify Bus {bus_id} voltage")
                 
@@ -554,6 +1368,9 @@ class PowerSystemGUI:
                 iterations = self.estimator.estimation_results.get('iterations', 'N/A')
                 self.log(f"   Iterations: {iterations}")
                 self.update_grid_info()
+                
+                # Auto-refresh results and plots
+                self.auto_refresh_results_and_plots()
             else:
                 self.log("❌ State estimation failed")
             self.update_status("Ready")
@@ -572,6 +1389,11 @@ class PowerSystemGUI:
             if hasattr(self.estimator.net, 'measurement') and len(self.estimator.net.measurement) > 0:
                 self.estimator.test_observability()
                 self.log("✅ Observability analysis completed")
+                
+                # Auto-refresh plots (observability affects measurement locations display)
+                if self.auto_refresh_var.get():
+                    self.refresh_grid_plot()
+                    self.log("🔄 Auto-refreshed grid visualization")
             else:
                 self.log("❌ No measurements available. Generate measurements first.")
             self.update_status("Ready")
@@ -642,14 +1464,35 @@ class PowerSystemGUI:
             self.estimator.show_results()
             self.log("✅ Results displayed in console")
             
-            # Update the results table and switch to it
+            # Update the results table and grid plot
             self.refresh_results_table()
+            self.refresh_grid_plot()
             self.notebook.select(1)  # Switch to Results Table tab
             self.log("✅ Results table updated - switched to Results Table tab")
             
             self.update_status("Ready")
         except Exception as e:
             self.log(f"❌ Error showing results: {e}")
+            self.update_status("Error")
+    
+    def show_grid_plot(self):
+        """Show grid visualization and switch to that tab"""
+        if not self.estimator:
+            messagebox.showerror("Error", "No grid model available")
+            return
+            
+        self.update_status("Updating grid visualization...")
+        try:
+            # Refresh the grid plot
+            self.refresh_grid_plot()
+            
+            # Switch to Grid Visualization tab
+            self.notebook.select(2)  # Grid Visualization is tab index 2
+            self.log("✅ Grid visualization updated - switched to Grid Visualization tab")
+            
+            self.update_status("Ready")
+        except Exception as e:
+            self.log(f"❌ Error showing grid plot: {e}")
             self.update_status("Error")
     
     def quick_demo(self):
@@ -686,10 +1529,11 @@ class PowerSystemGUI:
                         angle = self.estimator.net.res_bus_est.va_degree.iloc[i]
                         self.log(f"   Bus {i}: {voltage:.4f} p.u., {angle:.2f}°")
                     
-                    # Update results table
-                    self.log("5. Updating results table...")
+                    # Update results table and grid plot
+                    self.log("5. Updating results table and grid visualization...")
                     self.refresh_results_table()
-                    self.log("   ✅ Results table updated")
+                    self.refresh_grid_plot()
+                    self.log("   ✅ Results table and grid plot updated")
             else:
                 self.log("   ❌ State estimation failed")
             
@@ -703,10 +1547,14 @@ class PowerSystemGUI:
             self.update_status("Demo failed")
     
     def clear_output(self):
-        """Clear output and results table"""
+        """Clear output, results table, grid plot, and switch display"""
         self.output_text.delete(1.0, tk.END)
         self.clear_results_table()
+        self.clear_grid_plot()
+        self.clear_switch_display()
         self.table_status_var.set("Output cleared - No results available")
+        self.grid_plot_status_var.set("Output cleared - No grid available")
+        self.switch_status_var.set("Output cleared - No switches available")
         self.update_status("Output cleared")
 
 def main():

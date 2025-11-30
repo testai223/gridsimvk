@@ -127,6 +127,10 @@ class GridStateEstimator:
         # Set slack bus (transmission system operator reference)
         ext_grid = pp.create_ext_grid(self.net, bus=bus_400_1, vm_pu=1.05, name="TSO_Slack")
         
+        # Create switches for network topology control
+        self._create_entso_switches(bus_400_1, bus_400_2, bus_400_3, bus_220_1, bus_220_2, 
+                                   line_400_1, line_400_2, line_220, trafo_1, trafo_2)
+        
         print("ENTSO-E style transmission grid created successfully")
         print(f"  400kV buses: 3")
         print(f"  220kV buses: 2") 
@@ -136,6 +140,7 @@ class GridStateEstimator:
         print(f"  Transformers: {len(self.net.trafo)}")
         print(f"  Generators: {len(self.net.gen)} ({gen_thermal} thermal, {gen_wind} wind)")
         print(f"  Loads: {len(self.net.load)} (urban + industrial)")
+        print(f"  Switches: {len(self.net.switch)} (circuit breakers and disconnectors)")
         
         return True
         
@@ -178,11 +183,126 @@ class GridStateEstimator:
         # Set slack bus
         pp.create_ext_grid(self.net, bus=0, vm_pu=1.04)
         
+        # Create switches for network topology control
+        self._create_ieee9_switches()
+        
         print("IEEE 9-bus system created successfully")
         print(f"Buses: {len(self.net.bus)}")
         print(f"Lines: {len(self.net.line)}")
         print(f"Generators: {len(self.net.gen)}")
         print(f"Loads: {len(self.net.load)}")
+        print(f"Switches: {len(self.net.switch)} (circuit breakers)")
+        
+    def _create_entso_switches(self, bus_400_1, bus_400_2, bus_400_3, bus_220_1, bus_220_2, 
+                              line_400_1, line_400_2, line_220, trafo_1, trafo_2):
+        """Create switches for ENTSO-E grid topology control"""
+        # Line circuit breakers (one at each end of major transmission lines)
+        pp.create_switch(self.net, bus=bus_400_1, element=line_400_1, et="l", closed=True, 
+                        type="CB", name="CB_400_North_From")
+        pp.create_switch(self.net, bus=bus_400_2, element=line_400_1, et="l", closed=True, 
+                        type="CB", name="CB_400_North_To")
+        
+        pp.create_switch(self.net, bus=bus_400_2, element=line_400_2, et="l", closed=True, 
+                        type="CB", name="CB_400_South_From")
+        pp.create_switch(self.net, bus=bus_400_3, element=line_400_2, et="l", closed=True, 
+                        type="CB", name="CB_400_South_To")
+        
+        pp.create_switch(self.net, bus=bus_220_1, element=line_220, et="l", closed=True, 
+                        type="CB", name="CB_220_East")
+        pp.create_switch(self.net, bus=bus_220_2, element=line_220, et="l", closed=True, 
+                        type="CB", name="CB_220_West")
+        
+        # Transformer circuit breakers (high voltage side)
+        pp.create_switch(self.net, bus=bus_400_2, element=trafo_1, et="t", closed=True, 
+                        type="CB", name="CB_T1_HV")
+        pp.create_switch(self.net, bus=bus_400_2, element=trafo_2, et="t", closed=True, 
+                        type="CB", name="CB_T2_HV")
+        
+        # Transformer low voltage side switches
+        pp.create_switch(self.net, bus=bus_220_1, element=trafo_1, et="t", closed=True, 
+                        type="CB", name="CB_T1_LV")
+        pp.create_switch(self.net, bus=bus_220_2, element=trafo_2, et="t", closed=True, 
+                        type="CB", name="CB_T2_LV")
+        
+        # Bus sectioning switches (for operational flexibility)
+        pp.create_switch(self.net, bus=bus_400_2, element=bus_400_1, et="b", closed=True, 
+                        type="DS", name="DS_400_Central_North")
+        pp.create_switch(self.net, bus=bus_400_2, element=bus_400_3, et="b", closed=True, 
+                        type="DS", name="DS_400_Central_South")
+        
+    def _create_ieee9_switches(self):
+        """Create switches for IEEE 9-bus system topology control"""
+        # Add circuit breakers for critical transmission lines
+        line_indices = self.net.line.index
+        
+        # Important transmission corridors get circuit breakers
+        critical_lines = [0, 1, 2, 3, 6, 8]  # Strategic line positions
+        
+        for i, line_idx in enumerate(line_indices):
+            if line_idx in critical_lines:
+                from_bus = self.net.line.from_bus.iloc[line_idx]
+                to_bus = self.net.line.to_bus.iloc[line_idx]
+                
+                # Circuit breaker at from bus
+                pp.create_switch(self.net, bus=from_bus, element=line_idx, et="l", closed=True, 
+                                type="CB", name=f"CB_L{line_idx}_From")
+                
+                # Circuit breaker at to bus
+                pp.create_switch(self.net, bus=to_bus, element=line_idx, et="l", closed=True, 
+                                type="CB", name=f"CB_L{line_idx}_To")
+        
+        # Add generator circuit breakers
+        for gen_idx in self.net.gen.index:
+            gen_bus = self.net.gen.bus.iloc[gen_idx]
+            pp.create_switch(self.net, bus=gen_bus, element=gen_bus, et="b", closed=True, 
+                            type="CB", name=f"CB_Gen{gen_idx}")
+    
+    def toggle_switch(self, switch_index, force_state=None):
+        """Toggle switch state or set to specific state"""
+        if self.net is None:
+            return False
+            
+        if switch_index not in self.net.switch.index:
+            return False
+        
+        if force_state is not None:
+            new_state = bool(force_state)
+        else:
+            # Toggle current state
+            current_state = self.net.switch.closed.iloc[switch_index]
+            new_state = not current_state
+        
+        self.net.switch.closed.iloc[switch_index] = new_state
+        
+        # Update network topology
+        try:
+            pp.runpp(self.net, algorithm='nr')
+            return True
+        except:
+            # If power flow fails due to switch operation, revert
+            self.net.switch.closed.iloc[switch_index] = not new_state
+            return False
+    
+    def get_switch_info(self):
+        """Get information about all switches in the network"""
+        if self.net is None or len(self.net.switch) == 0:
+            return []
+        
+        switch_info = []
+        for idx in self.net.switch.index:
+            switch_data = {
+                'index': idx,
+                'name': self.net.switch.name.iloc[idx] if 'name' in self.net.switch.columns else f"Switch {idx}",
+                'bus': self.net.switch.bus.iloc[idx],
+                'element': self.net.switch.element.iloc[idx],
+                'type': self.net.switch.et.iloc[idx],
+                'switch_type': self.net.switch.type.iloc[idx] if 'type' in self.net.switch.columns else 'CB',
+                'closed': self.net.switch.closed.iloc[idx],
+                'status': 'CLOSED' if self.net.switch.closed.iloc[idx] else 'OPEN'
+            }
+            switch_info.append(switch_data)
+        
+        return switch_info
         
     def simulate_measurements(self, noise_level=0.02):
         """Simulate measurement values with configurable noise"""
