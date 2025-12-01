@@ -1,16 +1,32 @@
 #!/usr/bin/env python3
 """
-Test script for GUI table functionality
+Test script for GUI table functionality.
+
+The test relies on a Tk GUI backend. In headless environments (like CI) we
+gracefully skip to avoid ImportErrors from unavailable display backends.
 """
 
-import tkinter as tk
-import sys
 import os
-import numpy as np
+import sys
 
-# Set matplotlib backend before imports
+import numpy as np
+import pytest
+
 import matplotlib
-matplotlib.use('TkAgg')
+
+HAS_DISPLAY = bool(os.environ.get("DISPLAY")) or sys.platform.startswith("win")
+if HAS_DISPLAY:
+    matplotlib.use("TkAgg")
+else:  # Headless execution
+    matplotlib.use("Agg")
+
+try:
+    import tkinter as tk
+except Exception as exc:  # pragma: no cover - environment-dependent
+    pytest.skip(f"Tkinter unavailable: {exc}", allow_module_level=True)
+
+if not HAS_DISPLAY:  # pragma: no cover - environment-dependent
+    pytest.skip("No display available for Tk GUI tests", allow_module_level=True)
 
 from simple_gui import PowerSystemGUI
 from grid_state_estimator import GridStateEstimator
