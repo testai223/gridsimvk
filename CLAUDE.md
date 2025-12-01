@@ -44,6 +44,18 @@ python3 main.py
 ./run.sh
 ```
 
+### Web Application (Recommended)
+```bash
+# Browser-based interface with interactive dashboard
+python3 run_web_app.py                   # Full-featured web launcher
+./launch_web.sh                          # Quick shell launcher (Unix/macOS)
+launch_web.bat                           # Windows batch launcher
+python3 show_web_options.py              # Show all launch options
+
+# Web app runs at http://127.0.0.1:8000 by default
+# See WEB_APP_README.md for detailed usage instructions
+```
+
 ### Core Functionality Scripts
 ```bash
 # Core state estimation functionality
@@ -98,6 +110,15 @@ The central class containing all power system analysis functionality:
 
 #### PowerSystemApp Class (`main.py`) 
 Interactive menu-driven interface providing access to all functionality through numbered menu options.
+
+#### Web Application (`web_ui/web_app.py`)
+Browser-based Flask web interface providing:
+- **Interactive Dashboard**: Real-time grid analysis and visualization
+- **Grid Management**: Create and configure IEEE 9-bus or ENTSO-E systems
+- **Measurement Control**: Generate, modify, and analyze measurements
+- **Advanced Analysis**: State estimation, observability, bad data detection
+- **Switch Operations**: Interactive switch control with topology validation
+- **Results Visualization**: Dynamic plots and measurement comparison tables
 
 ### Grid Models
 
