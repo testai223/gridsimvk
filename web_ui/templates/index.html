@@ -206,6 +206,60 @@
       </div>
     </div>
 
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="card-title mb-0">Measurement Definitions</h6>
+          {% if measurement_summary %}
+            <div class="d-flex flex-wrap gap-2">
+              <span class="badge bg-primary">{{ measurement_summary.total }} total</span>
+              <span class="badge bg-secondary">{{ measurement_summary.unique_elements }} unique elements</span>
+            </div>
+          {% endif %}
+        </div>
+        {% if measurement_summary and measurement_summary.by_type %}
+          <div class="mb-2 small text-muted">
+            {% for mtype, count in measurement_summary.by_type %}
+              <span class="me-2">{{ mtype|upper }}: {{ count }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if measurement_definitions.rows %}
+          <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle mb-2">
+              <thead>
+                <tr>
+                  <th class="text-nowrap">Type</th>
+                  <th class="text-nowrap">Element</th>
+                  <th>Description</th>
+                  <th class="text-nowrap">Value</th>
+                  <th class="text-nowrap">Std Dev</th>
+                  <th class="text-nowrap">Side</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for meas in measurement_definitions.rows %}
+                  <tr>
+                    <td class="text-uppercase fw-semibold">{{ meas.type }}</td>
+                    <td>{{ meas.element_name }}</td>
+                    <td class="text-muted">{{ meas.element_description }}</td>
+                    <td>{{ '%.4f'|format(meas.value) }}</td>
+                    <td>{{ '%.4f'|format(meas.std_dev) }}</td>
+                    <td>{{ meas.side or '-' }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if measurement_definitions.limited %}
+            <p class="text-muted small mb-0">Showing first {{ measurement_definitions.rows|length }} of {{ measurement_definitions.total }} measurements.</p>
+          {% endif %}
+        {% else %}
+          <p class="text-muted mb-0">No measurements defined yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-2">

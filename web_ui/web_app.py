@@ -48,6 +48,8 @@ def index():
     grid_info = build_grid_info()
     measurement_preview = get_measurement_preview()
     comparison_table = get_measurement_comparison_data()
+    measurement_definitions = get_measurement_definitions()
+    measurement_summary = get_measurement_summary(measurement_definitions)
     switch_info = state.estimator.get_switch_info() if state.estimator else []
     grid_plot = generate_grid_plot()
 
@@ -56,6 +58,8 @@ def index():
         grid_info=grid_info,
         measurement_preview=measurement_preview,
         comparison_table=comparison_table,
+        measurement_definitions=measurement_definitions,
+        measurement_summary=measurement_summary,
         switch_info=switch_info,
         grid_plot=grid_plot,
         logs=reversed(state.logs),
@@ -316,6 +320,44 @@ def get_measurement_preview():
             }
         )
     return preview
+
+
+def get_measurement_definitions(max_rows: int = 50):
+    if not state.estimator:
+        return {"rows": [], "total": 0, "limited": False, "all_rows": []}
+
+    measurement_rows = state.estimator.get_measurement_info()
+    measurement_rows = sorted(
+        measurement_rows,
+        key=lambda m: (m.get("type", ""), m.get("element", 0), m.get("side", "")),
+    )
+
+    limited = len(measurement_rows) > max_rows
+    return {
+        "rows": measurement_rows[:max_rows],
+        "total": len(measurement_rows),
+        "limited": limited,
+        "all_rows": measurement_rows,
+    }
+
+
+def get_measurement_summary(definitions):
+    rows = definitions.get("all_rows") or definitions.get("rows", [])
+    if not rows:
+        return {}
+
+    type_counts = {}
+    element_counts = set()
+    for row in rows:
+        mtype = row.get("type", "?")
+        type_counts[mtype] = type_counts.get(mtype, 0) + 1
+        element_counts.add(row.get("element"))
+
+    return {
+        "total": definitions.get("total", len(rows)),
+        "by_type": sorted(type_counts.items()),
+        "unique_elements": len(element_counts),
+    }
 
 
 def get_measurement_comparison_data():
