@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card mb-3">
+      <div class="card-body">
+        <h5 class="card-title mb-3">Grid Controls</h5>
+        <div class="row g-2">
+          <div class="col-md-4">
+            <form method="post" action="{{ url_for('create_grid') }}">
+              <input type="hidden" name="grid_type" value="ieee9" />
+              <button class="btn btn-primary w-100" type="submit">Create IEEE 9-bus Grid</button>
+            </form>
+          </div>
+          <div class="col-md-4">
+            <form method="post" action="{{ url_for('create_grid') }}">
+              <input type="hidden" name="grid_type" value="entsoe" />
+              <button class="btn btn-outline-primary w-100" type="submit">Create ENTSO-E Grid</button>
+            </form>
+          </div>
+          <div class="col-md-4">
+            <form method="post" action="{{ url_for('quick_demo') }}">
+              <button class="btn btn-secondary w-100" type="submit">Quick Demo</button>
+            </form>
+          </div>
+        </div>
+        <hr />
+        <div class="row g-2 align-items-end">
+          <div class="col-md-3">
+            <label class="form-label">Noise Level</label>
+            <form method="post" action="{{ url_for('simulate_measurements') }}" class="d-flex align-items-end gap-2">
+              <input name="noise" type="number" step="0.01" min="0" value="0.02" class="form-control" />
+              <button class="btn btn-success" type="submit">Generate</button>
+            </form>
+          </div>
+          <div class="col-md-3">
+            <form method="post" action="{{ url_for('list_measurements') }}">
+              <label class="form-label">Measurements</label>
+              <button class="btn btn-outline-secondary w-100" type="submit">List Latest</button>
+            </form>
+          </div>
+          <div class="col-md-6">
+            <form method="post" action="{{ url_for('modify_bus') }}" class="row g-2 align-items-end">
+              <div class="col-4">
+                <label class="form-label">Bus ID</label>
+                <input name="bus_id" type="number" min="0" value="1" class="form-control" />
+              </div>
+              <div class="col-4">
+                <label class="form-label">Voltage (p.u.)</label>
+                <input name="voltage" type="number" step="0.01" value="1.05" class="form-control" />
+              </div>
+              <div class="col-4">
+                <button class="btn btn-warning w-100" type="submit">Modify Voltage</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <hr />
+        <div class="row g-2">
+          <div class="col-md-3">
+            <form method="post" action="{{ url_for('state_estimation') }}">
+              <button class="btn btn-primary w-100" type="submit">Run State Estimation</button>
+            </form>
+          </div>
+          <div class="col-md-3">
+            <form method="post" action="{{ url_for('observability') }}">
+              <button class="btn btn-outline-primary w-100" type="submit">Test Observability</button>
+            </form>
+          </div>
+          <div class="col-md-3">
+            <form method="post" action="{{ url_for('consistency') }}">
+              <button class="btn btn-outline-secondary w-100" type="submit">Check Consistency</button>
+            </form>
+          </div>
+          <div class="col-md-3">
+            <form method="post" action="{{ url_for('bad_data') }}">
+              <button class="btn btn-danger w-100" type="submit">Detect Bad Data</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h5 class="card-title mb-0">Grid Visualization</h5>
+          <form method="post" action="{{ url_for('clear_output') }}">
+            <button class="btn btn-sm btn-outline-dark" type="submit">Clear Logs</button>
+          </form>
+        </div>
+        {% if grid_plot %}
+          <img class="grid-img" src="data:image/png;base64,{{ grid_plot }}" alt="Grid plot" />
+        {% else %}
+          <div class="text-muted">Create a grid to view the plot.</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <h5 class="card-title">State Estimation Results</h5>
+        {% if comparison_table %}
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th>Measurement</th><th>Unit</th><th>Load Flow</th><th>Measured</th><th>Estimated</th><th>Meas Error %</th><th>Est Error %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in comparison_table %}
+                  <tr>
+                    <td>{{ row.name }}</td>
+                    <td>{{ row.unit }}</td>
+                    <td>{{ '%.4f'|format(row.true) }}</td>
+                    <td>{{ row.measured is not none and ('%.4f'|format(row.measured)) or '-' }}</td>
+                    <td>{{ '%.4f'|format(row.estimated) }}</td>
+                    <td>{{ row.meas_error is not none and ('%.2f'|format(row.meas_error)) or '-' }}</td>
+                    <td>{{ row.est_error is not none and ('%.2f'|format(row.est_error)) or '-' }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="text-muted mb-0">Run state estimation to view results.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="card-title">Grid Summary</h6>
+        {% if grid_info %}
+          <ul class="list-unstyled mb-0">
+            <li><strong>Type:</strong> {{ grid_info.type }}</li>
+            <li><strong>Buses:</strong> {{ grid_info.buses }}</li>
+            <li><strong>Lines:</strong> {{ grid_info.lines }}</li>
+            <li><strong>Generators:</strong> {{ grid_info.generators }}</li>
+            <li><strong>Loads:</strong> {{ grid_info.loads }}</li>
+            <li><strong>Measurements:</strong> {{ grid_info.measurements }}</li>
+          </ul>
+        {% else %}
+          <p class="text-muted mb-0">Create a grid to get started.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="card-title mb-0">Switch Control</h6>
+          <small class="text-muted">Operate circuit breakers</small>
+        </div>
+        {% if switch_info %}
+          <div class="list-group">
+            {% for sw in switch_info %}
+              <div class="list-group-item d-flex justify-content-between align-items-center">
+                <div>
+                  <div><strong>{{ sw.name }}</strong> ({{ sw.switch_type }})</div>
+                  <small class="text-muted">Bus {{ sw.bus }} • Element {{ sw.element }} • {{ sw.status }}</small>
+                </div>
+                <div class="btn-group">
+                  <form method="post" action="{{ url_for('operate_switch') }}">
+                    <input type="hidden" name="switch_index" value="{{ sw.index }}">
+                    <input type="hidden" name="action" value="open">
+                    <button class="btn btn-sm btn-outline-danger" type="submit">Open</button>
+                  </form>
+                  <form method="post" action="{{ url_for('operate_switch') }}">
+                    <input type="hidden" name="switch_index" value="{{ sw.index }}">
+                    <input type="hidden" name="action" value="close">
+                    <button class="btn btn-sm btn-outline-success" type="submit">Close</button>
+                  </form>
+                  <form method="post" action="{{ url_for('operate_switch') }}">
+                    <input type="hidden" name="switch_index" value="{{ sw.index }}">
+                    <input type="hidden" name="action" value="toggle">
+                    <button class="btn btn-sm btn-outline-secondary" type="submit">Toggle</button>
+                  </form>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="text-muted mb-0">Create a grid to manage switches.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="card-title">Measurement Preview</h6>
+        {% if measurement_preview %}
+          <ul class="list-group list-group-flush">
+            {% for meas in measurement_preview %}
+              <li class="list-group-item">
+                {{ meas.type|upper }} {{ meas.element }} {{ meas.side }} = {{ '%.4f'|format(meas.value) }} (±{{ meas.std_dev }})
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted mb-0">No measurements available.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="card-title mb-0">Activity Log</h6>
+          <small class="text-muted">Most recent first</small>
+        </div>
+        <div class="log-box">
+          {% for log in logs %}
+            <p>{{ log }}</p>
+          {% else %}
+            <p class="text-muted">No activity yet.</p>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

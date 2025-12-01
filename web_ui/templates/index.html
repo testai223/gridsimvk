@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
+
 <div class="row g-3">
+  <!-- Main Content Area -->
   <div class="col-lg-8">
+    
+    <!-- Grid Controls -->
     <div class="card mb-3">
       <div class="card-body">
         <h5 class="card-title mb-3">Grid Controls</h5>
@@ -81,6 +85,193 @@
       </div>
     </div>
 
+    <!-- Enhanced Measurement Management Panel -->
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h5 class="card-title mb-0">Measurement Management</h5>
+          <div class="btn-group" role="group">
+            <form method="post" action="{{ url_for('analyze_measurement_gaps') }}" class="d-inline">
+              <button class="btn btn-outline-info btn-sm" type="submit">Analyze Gaps</button>
+            </form>
+          </div>
+        </div>
+
+        {% if measurement_stats %}
+        <!-- Measurement Statistics Dashboard -->
+        <div class="row g-3 mb-3">
+          <div class="col-md-3">
+            <div class="card bg-primary text-white">
+              <div class="card-body text-center">
+                <h3 class="mb-1">{{ measurement_stats.total_measurements }}</h3>
+                <small>Total Measurements</small>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <div class="card bg-success text-white">
+              <div class="card-body text-center">
+                <h3 class="mb-1">{{ "%.1f"|format(measurement_stats.voltage_coverage_pct) }}%</h3>
+                <small>Voltage Coverage</small>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <div class="card bg-info text-white">
+              <div class="card-body text-center">
+                <h3 class="mb-1">{{ "%.2f"|format(measurement_stats.redundancy_ratio) }}</h3>
+                <small>Redundancy Ratio</small>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <div class="card {% if measurement_stats.system_observable %}bg-success{% else %}bg-warning{% endif %} text-white">
+              <div class="card-body text-center">
+                <h3 class="mb-1">{% if measurement_stats.system_observable %}✓{% else %}✗{% endif %}</h3>
+                <small>Observable</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Measurement Breakdown -->
+        <div class="row g-2 mb-3">
+          <div class="col-md-2">
+            <small class="text-muted">Voltage:</small><br>
+            <strong>{{ measurement_stats.voltage_measurements }}</strong>
+          </div>
+          <div class="col-md-2">
+            <small class="text-muted">Active Power:</small><br>
+            <strong>{{ measurement_stats.active_power_measurements }}</strong>
+          </div>
+          <div class="col-md-2">
+            <small class="text-muted">Reactive Power:</small><br>
+            <strong>{{ measurement_stats.reactive_power_measurements }}</strong>
+          </div>
+          <div class="col-md-2">
+            <small class="text-muted">Pseudo:</small><br>
+            <strong>{{ measurement_stats.pseudomeasurements }}</strong>
+          </div>
+          <div class="col-md-2">
+            <small class="text-muted">Real:</small><br>
+            <strong>{{ measurement_stats.real_measurements }}</strong>
+          </div>
+          <div class="col-md-2">
+            <small class="text-muted">Line Coverage:</small><br>
+            <strong>{{ "%.1f"|format(measurement_stats.line_coverage_pct) }}%</strong>
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- Pseudomeasurement Controls -->
+        <div class="card border-secondary mb-3">
+          <div class="card-header bg-secondary text-white">
+            <h6 class="mb-0">Pseudomeasurement Controls</h6>
+          </div>
+          <div class="card-body">
+            <div class="row g-2">
+              <div class="col-md-4">
+                <form method="post" action="{{ url_for('add_pseudomeasurements') }}">
+                  <label class="form-label">Strategy</label>
+                  <div class="input-group">
+                    <select name="strategy" class="form-select">
+                      <option value="adaptive">Adaptive</option>
+                      <option value="minimum_cost">Minimum Cost</option>
+                      <option value="maximum_redundancy">Max Redundancy</option>
+                    </select>
+                    <button class="btn btn-outline-success" type="submit">Add Pseudo</button>
+                  </div>
+                </form>
+              </div>
+              <div class="col-md-4">
+                <form method="post" action="{{ url_for('remove_pseudomeasurements') }}">
+                  <label class="form-label">&nbsp;</label>
+                  <button class="btn btn-outline-danger w-100" type="submit">Remove All Pseudo</button>
+                </form>
+              </div>
+              <div class="col-md-4">
+                {% if pseudomeasurement_status %}
+                <label class="form-label">Status</label>
+                <div class="alert alert-info py-1 mb-0">
+                  <small>{{ pseudomeasurement_status }}</small>
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Measurement Filter and Table -->
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0">Measurement Details</h6>
+          <div class="btn-group btn-group-sm" role="group">
+            <a href="{{ url_for('filter_measurements', filter_type='all') }}" 
+               class="btn {% if measurement_filter == 'all' %}btn-primary{% else %}btn-outline-primary{% endif %}">All</a>
+            <a href="{{ url_for('filter_measurements', filter_type='v') }}" 
+               class="btn {% if measurement_filter == 'v' %}btn-primary{% else %}btn-outline-primary{% endif %}">Voltage</a>
+            <a href="{{ url_for('filter_measurements', filter_type='p') }}" 
+               class="btn {% if measurement_filter == 'p' %}btn-primary{% else %}btn-outline-primary{% endif %}">P</a>
+            <a href="{{ url_for('filter_measurements', filter_type='q') }}" 
+               class="btn {% if measurement_filter == 'q' %}btn-primary{% else %}btn-outline-primary{% endif %}">Q</a>
+          </div>
+        </div>
+
+        {% if measurement_table %}
+        <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+          <table class="table table-sm align-middle">
+            <thead class="table-dark sticky-top">
+              <tr>
+                <th>Index</th>
+                <th>Type</th>
+                <th>Element</th>
+                <th>Value</th>
+                <th>Uncertainty</th>
+                <th>Unit</th>
+                <th>Pseudo</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for meas in measurement_table %}
+              <tr {% if meas.is_pseudo %}class="table-warning"{% endif %}>
+                <td>{{ meas.index }}</td>
+                <td><span class="badge bg-secondary">{{ meas.type }}</span></td>
+                <td><small>{{ meas.element_desc }}</small></td>
+                <td>{{ "%.4f"|format(meas.value) }}</td>
+                <td>{{ "%.4f"|format(meas.std_dev) }} ({{ "%.1f"|format(meas.uncertainty_pct) }}%)</td>
+                <td>{{ meas.unit }}</td>
+                <td>
+                  {% if meas.is_pseudo %}
+                    <span class="badge bg-warning">Yes</span>
+                  {% else %}
+                    <span class="badge bg-success">No</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn btn-outline-primary btn-sm" 
+                            onclick="editMeasurement({{ meas.index }}, {{ meas.value }})">Edit</button>
+                    <form method="post" action="{{ url_for('delete_measurement') }}" class="d-inline" 
+                          onsubmit="return confirm('Delete measurement {{ meas.index }}?')">
+                      <input type="hidden" name="measurement_idx" value="{{ meas.index }}">
+                      <button type="submit" class="btn btn-outline-danger btn-sm">Delete</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="text-muted text-center py-3">
+          No measurements available. Generate measurements first.
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Grid Visualization -->
     <div class="card mb-3">
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-2">
@@ -97,6 +288,7 @@
       </div>
     </div>
 
+    <!-- State Estimation Results -->
     <div class="card mb-3">
       <div class="card-body">
         <h5 class="card-title">State Estimation Results</h5>
@@ -128,9 +320,12 @@
         {% endif %}
       </div>
     </div>
+
   </div>
 
+  <!-- Right Sidebar -->
   <div class="col-lg-4">
+    <!-- Grid Summary -->
     <div class="card mb-3">
       <div class="card-body">
         <h6 class="card-title">Grid Summary</h6>
@@ -149,6 +344,36 @@
       </div>
     </div>
 
+    <!-- Analysis Status Panel -->
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="card-title">Analysis Status</h6>
+        <ul class="list-unstyled mb-0">
+          <li><strong>Observability:</strong> 
+            <span class="badge {% if observability_status %}bg-success{% else %}bg-secondary{% endif %}">
+              {{ observability_status or 'Not run' }}
+            </span>
+          </li>
+          <li><strong>Consistency:</strong> 
+            <span class="badge {% if consistency_status %}bg-success{% else %}bg-secondary{% endif %}">
+              {{ consistency_status or 'Not run' }}
+            </span>
+          </li>
+          <li><strong>Bad Data:</strong> 
+            <span class="badge {% if bad_data_status %}bg-success{% else %}bg-secondary{% endif %}">
+              {{ bad_data_status or 'Not run' }}
+            </span>
+          </li>
+          <li><strong>Pseudomeasurements:</strong> 
+            <span class="badge {% if pseudomeasurement_status %}bg-info{% else %}bg-secondary{% endif %}">
+              {{ pseudomeasurement_status or 'None' }}
+            </span>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Switch Control -->
     <div class="card mb-3">
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-2">
@@ -189,6 +414,7 @@
       </div>
     </div>
 
+    <!-- Measurement Preview -->
     <div class="card mb-3">
       <div class="card-body">
         <h6 class="card-title">Measurement Preview</h6>
@@ -206,6 +432,7 @@
       </div>
     </div>
 
+    <!-- Activity Log -->
     <div class="card">
       <div class="card-body">
         <div class="d-flex justify-content-between align-items-center mb-2">
@@ -223,4 +450,53 @@
     </div>
   </div>
 </div>
+
+<!-- Edit Measurement Modal -->
+<div class="modal fade" id="editMeasurementModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('edit_measurement') }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Edit Measurement</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="measurement_idx" id="edit_measurement_idx">
+          <div class="mb-3">
+            <label for="edit_new_value" class="form-label">New Value</label>
+            <input type="number" step="0.0001" name="new_value" id="edit_new_value" class="form-control" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Update Measurement</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function editMeasurement(measurementIdx, currentValue) {
+  document.getElementById('edit_measurement_idx').value = measurementIdx;
+  document.getElementById('edit_new_value').value = currentValue;
+  new bootstrap.Modal(document.getElementById('editMeasurementModal')).show();
+}
+
+// Auto-refresh functionality (optional)
+function refreshMeasurements() {
+  fetch('/api/measurements')
+    .then(response => response.json())
+    .then(data => {
+      if (!data.error) {
+        console.log('Measurements updated:', data.measurements.length);
+      }
+    })
+    .catch(error => console.log('Auto-refresh error:', error));
+}
+
+// Auto-refresh every 30 seconds (optional)
+// setInterval(refreshMeasurements, 30000);
+</script>
+
 {% endblock %}

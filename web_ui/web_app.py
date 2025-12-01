@@ -1,12 +1,13 @@
 import base64
 import io
+import json
 import math
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, flash, redirect, render_template, request, url_for, jsonify
 import matplotlib
 
 # Ensure the repository root (where grid_state_estimator.py lives) is importable when
@@ -31,6 +32,9 @@ class AppState:
     observability_status: Optional[str] = None
     consistency_status: Optional[str] = None
     bad_data_status: Optional[str] = None
+    pseudomeasurement_status: Optional[str] = None
+    measurement_filter: str = "all"
+    last_analysis_results: Dict[str, Any] = field(default_factory=dict)
 
     def log(self, message: str) -> None:
         self.logs.append(message)
@@ -48,6 +52,8 @@ def index():
     grid_info = build_grid_info()
     measurement_preview = get_measurement_preview()
     comparison_table = get_measurement_comparison_data()
+    measurement_table = get_full_measurement_table()
+    measurement_stats = get_measurement_statistics()
     switch_info = state.estimator.get_switch_info() if state.estimator else []
     grid_plot = generate_grid_plot()
 
@@ -56,12 +62,16 @@ def index():
         grid_info=grid_info,
         measurement_preview=measurement_preview,
         comparison_table=comparison_table,
+        measurement_table=measurement_table,
+        measurement_stats=measurement_stats,
         switch_info=switch_info,
         grid_plot=grid_plot,
         logs=reversed(state.logs),
         observability_status=state.observability_status,
         consistency_status=state.consistency_status,
         bad_data_status=state.bad_data_status,
+        pseudomeasurement_status=state.pseudomeasurement_status,
+        measurement_filter=state.measurement_filter,
     )
 
 
@@ -270,8 +280,200 @@ def clear_output():
     state.observability_status = None
     state.consistency_status = None
     state.bad_data_status = None
+    state.pseudomeasurement_status = None
+    state.last_analysis_results.clear()
     flash("Logs cleared", "info")
     return redirect(url_for("index"))
+
+
+@app.route("/measurements/filter/<filter_type>")
+def filter_measurements(filter_type):
+    """Filter measurements by type"""
+    state.measurement_filter = filter_type
+    return redirect(url_for("index"))
+
+
+@app.post("/measurements/edit")
+def edit_measurement():
+    """Edit a specific measurement"""
+    if not ensure_grid():
+        return redirect(url_for("index"))
+    
+    try:
+        measurement_idx = int(request.form.get("measurement_idx"))
+        new_value = float(request.form.get("new_value"))
+        
+        if measurement_idx in state.estimator.net.measurement.index:
+            old_value = state.estimator.net.measurement.loc[measurement_idx, "value"]
+            state.estimator.net.measurement.loc[measurement_idx, "value"] = new_value
+            
+            mtype = state.estimator.net.measurement.loc[measurement_idx, "measurement_type"]
+            element = state.estimator.net.measurement.loc[measurement_idx, "element"]
+            
+            state.log(f"✏️ Modified {mtype.upper()} measurement {measurement_idx} (element {element}): {old_value:.4f} → {new_value:.4f}")
+            flash(f"Measurement {measurement_idx} updated", "success")
+        else:
+            flash(f"Measurement {measurement_idx} not found", "error")
+            
+    except Exception as exc:
+        flash(f"Failed to edit measurement: {exc}", "error")
+        state.log(f"❌ Measurement edit error: {exc}")
+    
+    return redirect(url_for("index"))
+
+
+@app.post("/measurements/delete")
+def delete_measurement():
+    """Delete a specific measurement"""
+    if not ensure_grid():
+        return redirect(url_for("index"))
+    
+    try:
+        measurement_idx = int(request.form.get("measurement_idx"))
+        
+        if measurement_idx in state.estimator.net.measurement.index:
+            mtype = state.estimator.net.measurement.loc[measurement_idx, "measurement_type"]
+            element = state.estimator.net.measurement.loc[measurement_idx, "element"]
+            
+            state.estimator.net.measurement.drop(measurement_idx, inplace=True)
+            state.estimator.net.measurement.reset_index(drop=True, inplace=True)
+            
+            state.log(f"🗑️ Deleted {mtype.upper()} measurement from element {element}")
+            flash(f"Measurement {measurement_idx} deleted", "success")
+        else:
+            flash(f"Measurement {measurement_idx} not found", "error")
+            
+    except Exception as exc:
+        flash(f"Failed to delete measurement: {exc}", "error")
+        state.log(f"❌ Measurement delete error: {exc}")
+    
+    return redirect(url_for("index"))
+
+
+@app.post("/pseudomeasurements/add")
+def add_pseudomeasurements():
+    """Add pseudomeasurements using intelligent strategies"""
+    if not ensure_grid():
+        return redirect(url_for("index"))
+    
+    try:
+        strategy = request.form.get("strategy", "adaptive")
+        
+        # Use the enhanced pseudomeasurement functionality
+        success, result = state.estimator.add_intelligent_pseudomeasurements(strategy=strategy)
+        
+        if success and isinstance(result, dict):
+            added_count = result.get("added_count", 0)
+            final_redundancy = result.get("final_redundancy", 0)
+            
+            state.pseudomeasurement_status = f"{strategy} ({added_count} added, redundancy: {final_redundancy:.2f})"
+            state.log(f"🔮 {result['summary']}")
+            state.log(f"   Strategy: {strategy}, Added: {added_count}, Final redundancy: {final_redundancy:.2f}")
+            flash(f"Added {added_count} pseudomeasurements using {strategy} strategy", "success")
+        elif success:
+            state.pseudomeasurement_status = f"{strategy} (completed)"
+            state.log(f"🔮 {result}")
+            flash(str(result), "success")
+        else:
+            flash(f"Failed to add pseudomeasurements: {result}", "error")
+            state.log(f"❌ Pseudomeasurement error: {result}")
+            
+    except Exception as exc:
+        flash(f"Pseudomeasurement operation failed: {exc}", "error")
+        state.log(f"❌ Pseudomeasurement error: {exc}")
+    
+    return redirect(url_for("index"))
+
+
+@app.post("/pseudomeasurements/remove")
+def remove_pseudomeasurements():
+    """Remove all pseudomeasurements"""
+    if not ensure_grid():
+        return redirect(url_for("index"))
+    
+    try:
+        success, result = state.estimator.remove_pseudomeasurements()
+        
+        if success:
+            state.pseudomeasurement_status = "removed"
+            state.log(f"🗑️ {result}")
+            flash(result, "success")
+        else:
+            flash(f"Failed to remove pseudomeasurements: {result}", "error")
+            state.log(f"❌ Pseudomeasurement removal error: {result}")
+            
+    except Exception as exc:
+        flash(f"Failed to remove pseudomeasurements: {exc}", "error")
+        state.log(f"❌ Pseudomeasurement removal error: {exc}")
+    
+    return redirect(url_for("index"))
+
+
+@app.post("/measurements/analyze-gaps")
+def analyze_measurement_gaps():
+    """Analyze measurement gaps and coverage"""
+    if not ensure_grid():
+        return redirect(url_for("index"))
+    
+    try:
+        gap_analysis = state.estimator.analyze_measurement_gaps()
+        
+        if gap_analysis:
+            voltage_gaps = gap_analysis['gap_summary']['voltage_gaps']
+            power_gaps = gap_analysis['gap_summary']['power_gaps']
+            critical_gaps = gap_analysis['critical_gaps']
+            
+            state.last_analysis_results['gap_analysis'] = gap_analysis
+            
+            state.log(f"📊 Gap Analysis Complete:")
+            state.log(f"   Voltage gaps: {voltage_gaps['count']} buses ({voltage_gaps['percentage']:.1f}%)")
+            state.log(f"   Power gaps: {power_gaps['count']} lines ({power_gaps['percentage']:.1f}%)")
+            state.log(f"   Critical gaps: {len(critical_gaps)}")
+            
+            for rec in gap_analysis['recommendations']:
+                state.log(f"   💡 {rec}")
+            
+            flash("Measurement gap analysis completed", "success")
+        else:
+            flash("Gap analysis failed", "error")
+            
+    except Exception as exc:
+        flash(f"Gap analysis failed: {exc}", "error")
+        state.log(f"❌ Gap analysis error: {exc}")
+    
+    return redirect(url_for("index"))
+
+
+@app.route("/api/measurements")
+def api_measurements():
+    """API endpoint for measurement data"""
+    if not state.estimator:
+        return jsonify({"error": "No grid model available"})
+    
+    try:
+        measurements = get_full_measurement_table()
+        stats = get_measurement_statistics()
+        
+        return jsonify({
+            "measurements": measurements,
+            "statistics": stats,
+            "filter": state.measurement_filter
+        })
+    except Exception as exc:
+        return jsonify({"error": str(exc)})
+
+
+@app.route("/api/pseudomeasurement-status")
+def api_pseudomeasurement_status():
+    """API endpoint for pseudomeasurement status"""
+    if not state.estimator:
+        return jsonify({"error": "No grid model available"})
+    
+    try:
+        summary = state.estimator.get_pseudomeasurement_summary()
+        return jsonify(summary)
+    except Exception as exc:
+        return jsonify({"error": str(exc)})
 
 
 def ensure_grid() -> bool:
@@ -393,6 +595,125 @@ def get_measurement_comparison_data():
             )
 
     return comparison
+
+
+def get_full_measurement_table():
+    """Get complete measurement table with all details"""
+    if not state.estimator or not hasattr(state.estimator, "net"):
+        return []
+    
+    net = state.estimator.net
+    if not hasattr(net, "measurement") or len(net.measurement) == 0:
+        return []
+    
+    measurements = []
+    filter_type = state.measurement_filter
+    
+    for idx, row in net.measurement.iterrows():
+        mtype = row.get("measurement_type", "")
+        element = row.get("element", 0)
+        side = row.get("side", "")
+        value = row.get("value", 0.0)
+        std_dev = row.get("std_dev", 0.0)
+        name = row.get("name", "")
+        
+        # Apply filter
+        if filter_type != "all" and mtype != filter_type:
+            continue
+        
+        # Determine if this is a pseudomeasurement
+        is_pseudo = "pseudo" in str(name).lower() or "zero" in str(name).lower()
+        
+        # Get element description
+        if mtype == "v":
+            element_desc = f"Bus {element}"
+            unit = "p.u."
+        elif mtype == "p":
+            if element < len(net.line):
+                from_bus = net.line.iloc[element]['from_bus'] if element in net.line.index else "?"
+                to_bus = net.line.iloc[element]['to_bus'] if element in net.line.index else "?"
+                element_desc = f"Line {element} ({from_bus}→{to_bus}) {side}"
+            else:
+                element_desc = f"Element {element} {side}"
+            unit = "MW"
+        elif mtype == "q":
+            if element < len(net.line):
+                from_bus = net.line.iloc[element]['from_bus'] if element in net.line.index else "?"
+                to_bus = net.line.iloc[element]['to_bus'] if element in net.line.index else "?"
+                element_desc = f"Line {element} ({from_bus}→{to_bus}) {side}"
+            else:
+                element_desc = f"Element {element} {side}"
+            unit = "MVAr"
+        else:
+            element_desc = f"Element {element} {side}"
+            unit = ""
+        
+        measurements.append({
+            "index": idx,
+            "type": mtype.upper(),
+            "element_desc": element_desc,
+            "element": element,
+            "side": side,
+            "value": value,
+            "std_dev": std_dev,
+            "uncertainty_pct": (std_dev / abs(value) * 100) if value != 0 else 0,
+            "unit": unit,
+            "name": name or f"{mtype}_{element}_{side}",
+            "is_pseudo": is_pseudo
+        })
+    
+    return measurements
+
+
+def get_measurement_statistics():
+    """Get comprehensive measurement statistics"""
+    if not state.estimator or not hasattr(state.estimator, "net"):
+        return {}
+    
+    net = state.estimator.net
+    if not hasattr(net, "measurement") or len(net.measurement) == 0:
+        return {}
+    
+    measurements = net.measurement
+    
+    # Basic counts
+    total_count = len(measurements)
+    voltage_count = len(measurements[measurements["measurement_type"] == "v"])
+    active_power_count = len(measurements[measurements["measurement_type"] == "p"])
+    reactive_power_count = len(measurements[measurements["measurement_type"] == "q"])
+    
+    # Pseudomeasurement analysis
+    pseudo_mask = measurements.get("name", "").astype(str).str.contains("pseudo|zero", case=False, na=False)
+    pseudo_count = pseudo_mask.sum() if hasattr(pseudo_mask, 'sum') else 0
+    real_count = total_count - pseudo_count
+    
+    # Coverage analysis
+    total_buses = len(net.bus) if hasattr(net, "bus") else 0
+    total_lines = len(net.line) if hasattr(net, "line") else 0
+    
+    measured_buses = len(measurements[measurements["measurement_type"] == "v"]["element"].unique()) if voltage_count > 0 else 0
+    measured_lines = len(measurements[measurements["measurement_type"].isin(["p", "q"])]["element"].unique()) if (active_power_count + reactive_power_count) > 0 else 0
+    
+    # Redundancy calculation
+    state_variables = 2 * total_buses - 1 if total_buses > 0 else 0  # V mag + angle (minus slack)
+    redundancy_ratio = total_count / state_variables if state_variables > 0 else 0
+    
+    return {
+        "total_measurements": total_count,
+        "voltage_measurements": voltage_count,
+        "active_power_measurements": active_power_count,
+        "reactive_power_measurements": reactive_power_count,
+        "pseudomeasurements": pseudo_count,
+        "real_measurements": real_count,
+        "voltage_coverage_pct": (measured_buses / total_buses * 100) if total_buses > 0 else 0,
+        "line_coverage_pct": (measured_lines / total_lines * 100) if total_lines > 0 else 0,
+        "redundancy_ratio": redundancy_ratio,
+        "system_observable": redundancy_ratio >= 1.0,
+        "total_buses": total_buses,
+        "total_lines": total_lines,
+        "measured_buses": measured_buses,
+        "measured_lines": measured_lines
+    }
 
 
 def generate_grid_plot():
