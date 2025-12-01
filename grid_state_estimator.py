@@ -257,31 +257,94 @@ class GridStateEstimator:
             pp.create_switch(self.net, bus=gen_bus, element=gen_bus, et="b", closed=True, 
                             type="CB", name=f"CB_Gen{gen_idx}")
     
-    def toggle_switch(self, switch_index, force_state=None):
-        """Toggle switch state or set to specific state"""
+    def toggle_switch(self, switch_index, force_state=None, check_topology=True):
+        """Toggle switch state or set to specific state with optional topology validation"""
         if self.net is None:
             return False
             
         if switch_index not in self.net.switch.index:
             return False
         
+        # Store original state for potential reversion
+        original_state = self.net.switch.closed.iloc[switch_index]
+        
         if force_state is not None:
             new_state = bool(force_state)
         else:
             # Toggle current state
-            current_state = self.net.switch.closed.iloc[switch_index]
-            new_state = not current_state
+            new_state = not original_state
         
-        self.net.switch.closed.iloc[switch_index] = new_state
+        # Apply switch operation
+        self.net.switch.loc[switch_index, 'closed'] = new_state
         
-        # Update network topology
+        # Check topology consistency if requested
+        if check_topology:
+            topology_check = self.validate_switch_operation_topology(switch_index, original_state, new_state)
+            if not topology_check['valid']:
+                # Revert switch operation due to topology issues
+                self.net.switch.loc[switch_index, 'closed'] = original_state
+                return False
+        
+        # Update network topology with power flow
         try:
             pp.runpp(self.net, algorithm='nr')
             return True
         except:
             # If power flow fails due to switch operation, revert
-            self.net.switch.closed.iloc[switch_index] = not new_state
+            self.net.switch.loc[switch_index, 'closed'] = original_state
             return False
+    
+    def validate_switch_operation_topology(self, switch_index, old_state, new_state):
+        """Validate topology after switch operation"""
+        validation_result = {
+            'valid': True,
+            'warnings': [],
+            'critical_issues': [],
+            'topology_impact': {}
+        }
+        
+        try:
+            # Get switch info
+            switch_data = self.net.switch.iloc[switch_index]
+            switch_name = switch_data['name'] if 'name' in switch_data.index else f"Switch {switch_index}"
+            
+            # Perform quick topology check
+            topology_results = self.check_topology_consistency(detailed_report=False)
+            
+            # Check for critical issues
+            if topology_results['isolated_buses']:
+                validation_result['critical_issues'].append(
+                    f"Operation would create {len(topology_results['isolated_buses'])} isolated buses"
+                )
+                validation_result['valid'] = False
+            
+            if len(topology_results['network_islands']) > 1:
+                validation_result['warnings'].append(
+                    f"Operation creates {len(topology_results['network_islands'])} network islands"
+                )
+                # Don't invalidate for islanding, just warn
+            
+            # Check for high-severity switch issues
+            high_severity_issues = [issue for issue in topology_results['switch_issues'] 
+                                  if issue['severity'] == 'high']
+            if len(high_severity_issues) > 3:  # More than 3 critical switches open
+                validation_result['warnings'].append(
+                    f"Many critical switches open ({len(high_severity_issues)} high-severity issues)"
+                )
+            
+            # Store topology impact summary
+            validation_result['topology_impact'] = {
+                'connectivity_status': topology_results['connectivity_status'],
+                'total_islands': len(topology_results['network_islands']),
+                'isolated_buses': len(topology_results['isolated_buses']),
+                'switch_issues': len(topology_results['switch_issues'])
+            }
+            
+        except Exception as e:
+            validation_result['critical_issues'].append(f"Topology validation error: {e}")
+            validation_result['valid'] = False
+        
+        return validation_result
     
     def get_switch_info(self):
         """Get information about all switches in the network"""
@@ -303,6 +366,667 @@ class GridStateEstimator:
             switch_info.append(switch_data)
         
         return switch_info
+    
+    def check_topology_consistency(self, detailed_report=True):
+        """
+        Comprehensive topology consistency check for power network
+        
+        Args:
+            detailed_report (bool): Whether to show detailed analysis (default True)
+            
+        Returns:
+            dict: Topology analysis results with connectivity and issues
+        """
+        if self.net is None:
+            raise ValueError("Grid model not created.")
+        
+        print("\n" + "="*70)
+        print("🔍 NETWORK TOPOLOGY CONSISTENCY CHECK")
+        print("="*70)
+        
+        topology_results = {
+            'overall_status': 'unknown',
+            'connectivity_status': 'unknown',
+            'total_buses': len(self.net.bus),
+            'total_lines': len(self.net.line),
+            'total_switches': len(self.net.switch) if hasattr(self.net, 'switch') else 0,
+            'isolated_buses': [],
+            'network_islands': [],
+            'radial_connections': [],
+            'switch_issues': [],
+            'connectivity_matrix': None,
+            'topology_issues': [],
+            'recommendations': []
+        }
+        
+        print(f"Network: {topology_results['total_buses']} buses, {topology_results['total_lines']} lines, {topology_results['total_switches']} switches")
+        
+        # 1. Build network connectivity considering switch states
+        connectivity_matrix = self._build_connectivity_matrix()
+        topology_results['connectivity_matrix'] = connectivity_matrix
+        
+        # 2. Find network islands (connected components)
+        islands = self._find_network_islands(connectivity_matrix)
+        topology_results['network_islands'] = islands
+        
+        # 3. Identify isolated buses
+        isolated_buses = self._find_isolated_buses(connectivity_matrix)
+        topology_results['isolated_buses'] = isolated_buses
+        
+        # 4. Detect radial connections (buses with only one connection)
+        radial_connections = self._find_radial_connections(connectivity_matrix)
+        topology_results['radial_connections'] = radial_connections
+        
+        # 5. Check switch-related topology issues
+        switch_issues = self._check_switch_topology_issues()
+        topology_results['switch_issues'] = switch_issues
+        
+        # 6. Analyze overall connectivity
+        connectivity_analysis = self._analyze_network_connectivity(islands, isolated_buses)
+        topology_results.update(connectivity_analysis)
+        
+        # 7. Generate recommendations
+        recommendations = self._generate_topology_recommendations(topology_results)
+        topology_results['recommendations'] = recommendations
+        
+        # Display results
+        if detailed_report:
+            self._display_topology_results(topology_results)
+        
+        # Store results
+        self.topology_results = topology_results
+        
+        return topology_results
+    
+    def _build_connectivity_matrix(self):
+        """Build network connectivity matrix considering switch states"""
+        n_buses = len(self.net.bus)
+        bus_indices = list(self.net.bus.index)
+        
+        # Initialize connectivity matrix
+        connectivity = np.zeros((n_buses, n_buses), dtype=bool)
+        
+        # Add connections from lines (considering switch states)
+        for line_idx in self.net.line.index:
+            from_bus = self.net.line.from_bus.iloc[line_idx]
+            to_bus = self.net.line.to_bus.iloc[line_idx]
+            
+            # Check if line is energized (all switches closed)
+            line_energized = self._is_line_energized(line_idx)
+            
+            if line_energized:
+                from_idx = bus_indices.index(from_bus)
+                to_idx = bus_indices.index(to_bus)
+                connectivity[from_idx, to_idx] = True
+                connectivity[to_idx, from_idx] = True
+        
+        # Add connections from transformers (considering switch states)
+        if hasattr(self.net, 'trafo') and len(self.net.trafo) > 0:
+            for trafo_idx in self.net.trafo.index:
+                hv_bus = self.net.trafo.hv_bus.iloc[trafo_idx]
+                lv_bus = self.net.trafo.lv_bus.iloc[trafo_idx]
+                
+                # Check if transformer is energized
+                trafo_energized = self._is_transformer_energized(trafo_idx)
+                
+                if trafo_energized:
+                    hv_idx = bus_indices.index(hv_bus)
+                    lv_idx = bus_indices.index(lv_bus)
+                    connectivity[hv_idx, lv_idx] = True
+                    connectivity[lv_idx, hv_idx] = True
+        
+        # Add bus-to-bus switch connections
+        if hasattr(self.net, 'switch') and len(self.net.switch) > 0:
+            for switch_idx in self.net.switch.index:
+                switch_data = self.net.switch.iloc[switch_idx]
+                if switch_data['et'] == 'b' and switch_data['closed']:  # Bus-to-bus switch
+                    bus1 = switch_data['bus']
+                    bus2 = switch_data['element']
+                    
+                    if bus1 in bus_indices and bus2 in bus_indices:
+                        bus1_idx = bus_indices.index(bus1)
+                        bus2_idx = bus_indices.index(bus2)
+                        connectivity[bus1_idx, bus2_idx] = True
+                        connectivity[bus2_idx, bus1_idx] = True
+        
+        return connectivity
+    
+    def _is_line_energized(self, line_idx):
+        """Check if a line is energized (all switches closed)"""
+        if not hasattr(self.net, 'switch') or len(self.net.switch) == 0:
+            return True  # No switches means line is always energized
+        
+        # Find all switches associated with this line
+        line_switches = self.net.switch[
+            (self.net.switch['et'] == 'l') & 
+            (self.net.switch['element'] == line_idx)
+        ]
+        
+        if len(line_switches) == 0:
+            return True  # No switches on this line
+        
+        # Line is energized only if ALL switches are closed
+        return line_switches['closed'].all()
+    
+    def _is_transformer_energized(self, trafo_idx):
+        """Check if a transformer is energized (all switches closed)"""
+        if not hasattr(self.net, 'switch') or len(self.net.switch) == 0:
+            return True
+        
+        # Find all switches associated with this transformer
+        trafo_switches = self.net.switch[
+            (self.net.switch['et'] == 't') & 
+            (self.net.switch['element'] == trafo_idx)
+        ]
+        
+        if len(trafo_switches) == 0:
+            return True
+        
+        return trafo_switches['closed'].all()
+    
+    def _find_network_islands(self, connectivity_matrix):
+        """Find network islands (connected components) using DFS"""
+        n_buses = len(connectivity_matrix)
+        visited = np.zeros(n_buses, dtype=bool)
+        islands = []
+        
+        def dfs(bus_idx, current_island):
+            visited[bus_idx] = True
+            current_island.append(bus_idx)
+            
+            # Visit all connected buses
+            for neighbor_idx in range(n_buses):
+                if connectivity_matrix[bus_idx, neighbor_idx] and not visited[neighbor_idx]:
+                    dfs(neighbor_idx, current_island)
+        
+        # Find all connected components
+        for bus_idx in range(n_buses):
+            if not visited[bus_idx]:
+                current_island = []
+                dfs(bus_idx, current_island)
+                islands.append({
+                    'island_id': len(islands),
+                    'buses': current_island,
+                    'bus_count': len(current_island),
+                    'bus_ids': [self.net.bus.index[i] for i in current_island]
+                })
+        
+        return islands
+    
+    def _find_isolated_buses(self, connectivity_matrix):
+        """Find buses with no connections"""
+        isolated = []
+        
+        for i, bus_idx in enumerate(self.net.bus.index):
+            # Check if bus has any connections
+            has_connections = np.any(connectivity_matrix[i, :]) or np.any(connectivity_matrix[:, i])
+            
+            if not has_connections:
+                isolated.append({
+                    'bus_index': i,
+                    'bus_id': bus_idx,
+                    'bus_name': self.net.bus.name.iloc[i] if 'name' in self.net.bus.columns else f"Bus {bus_idx}"
+                })
+        
+        return isolated
+    
+    def _find_radial_connections(self, connectivity_matrix):
+        """Find buses with only one connection (radial)"""
+        radial = []
+        
+        for i, bus_idx in enumerate(self.net.bus.index):
+            # Count connections
+            connection_count = np.sum(connectivity_matrix[i, :])
+            
+            if connection_count == 1:
+                # Find the connected bus
+                connected_buses = np.where(connectivity_matrix[i, :])[0]
+                connected_bus_id = self.net.bus.index[connected_buses[0]] if len(connected_buses) > 0 else None
+                
+                radial.append({
+                    'bus_index': i,
+                    'bus_id': bus_idx,
+                    'bus_name': self.net.bus.name.iloc[i] if 'name' in self.net.bus.columns else f"Bus {bus_idx}",
+                    'connected_to': connected_bus_id,
+                    'connection_count': connection_count
+                })
+        
+        return radial
+    
+    def _check_switch_topology_issues(self):
+        """Check for switch-related topology issues"""
+        issues = []
+        
+        if not hasattr(self.net, 'switch') or len(self.net.switch) == 0:
+            return issues
+        
+        # Check for open switches that might cause issues
+        open_switches = self.net.switch[~self.net.switch['closed']]
+        
+        for switch_idx in open_switches.index:
+            switch_data = open_switches.loc[switch_idx]
+            
+            issue = {
+                'switch_index': switch_idx,
+                'switch_name': switch_data['name'] if 'name' in switch_data.index else f"Switch {switch_idx}",
+                'switch_type': switch_data['type'] if 'type' in switch_data.index else 'Unknown',
+                'element_type': switch_data['et'],
+                'bus': switch_data['bus'],
+                'element': switch_data['element'],
+                'issue_type': 'open_switch',
+                'description': f"Switch {switch_data['name'] if 'name' in switch_data.index else switch_idx} is open"
+            }
+            
+            # Determine severity based on switch type and location
+            if switch_data['et'] == 'l':  # Line switch
+                issue['severity'] = 'high' if switch_data['type'] == 'CB' else 'medium'
+                issue['impact'] = 'Line isolation'
+            elif switch_data['et'] == 't':  # Transformer switch
+                issue['severity'] = 'high'
+                issue['impact'] = 'Transformer isolation'
+            elif switch_data['et'] == 'b':  # Bus switch
+                issue['severity'] = 'medium'
+                issue['impact'] = 'Bus sectioning'
+            else:
+                issue['severity'] = 'low'
+                issue['impact'] = 'Unknown'
+            
+            issues.append(issue)
+        
+        return issues
+    
+    def _analyze_network_connectivity(self, islands, isolated_buses):
+        """Analyze overall network connectivity"""
+        analysis = {
+            'connectivity_status': 'unknown',
+            'main_island_size': 0,
+            'total_islands': len(islands),
+            'largest_island': None,
+            'connectivity_issues': []
+        }
+        
+        # Determine connectivity status
+        if len(isolated_buses) > 0:
+            analysis['connectivity_status'] = 'fragmented'
+            analysis['connectivity_issues'].append(f"{len(isolated_buses)} isolated buses")
+        elif len(islands) > 1:
+            analysis['connectivity_status'] = 'islanded'
+            analysis['connectivity_issues'].append(f"{len(islands)} separate islands")
+        elif len(islands) == 1:
+            analysis['connectivity_status'] = 'connected'
+        else:
+            analysis['connectivity_status'] = 'no_network'
+        
+        # Find largest island
+        if islands:
+            largest_island = max(islands, key=lambda x: x['bus_count'])
+            analysis['largest_island'] = largest_island
+            analysis['main_island_size'] = largest_island['bus_count']
+        
+        # Set overall status
+        if analysis['connectivity_status'] == 'connected':
+            analysis['overall_status'] = 'healthy'
+        elif analysis['connectivity_status'] == 'islanded':
+            analysis['overall_status'] = 'warning'
+        else:
+            analysis['overall_status'] = 'critical'
+        
+        return analysis
+    
+    def _generate_topology_recommendations(self, topology_results):
+        """Generate recommendations based on topology analysis"""
+        recommendations = []
+        
+        # Isolated bus recommendations
+        if topology_results['isolated_buses']:
+            recommendations.append({
+                'type': 'isolated_buses',
+                'priority': 'high',
+                'description': f"Restore connections to {len(topology_results['isolated_buses'])} isolated buses",
+                'action': 'Close appropriate switches or check line connectivity'
+            })
+        
+        # Network island recommendations
+        if len(topology_results['network_islands']) > 1:
+            recommendations.append({
+                'type': 'network_islands',
+                'priority': 'high',
+                'description': f"Restore connectivity between {len(topology_results['network_islands'])} network islands",
+                'action': 'Close tie switches or restore transmission lines'
+            })
+        
+        # Radial connection recommendations
+        if topology_results['radial_connections']:
+            recommendations.append({
+                'type': 'radial_connections',
+                'priority': 'medium',
+                'description': f"Consider redundancy for {len(topology_results['radial_connections'])} radially connected buses",
+                'action': 'Add backup connections or monitor reliability'
+            })
+        
+        # Switch issue recommendations
+        open_switches = [issue for issue in topology_results['switch_issues'] if issue['issue_type'] == 'open_switch']
+        if open_switches:
+            high_impact = [sw for sw in open_switches if sw['severity'] == 'high']
+            if high_impact:
+                recommendations.append({
+                    'type': 'critical_switches',
+                    'priority': 'high',
+                    'description': f"Review {len(high_impact)} critical open switches",
+                    'action': 'Verify if switches should be closed for normal operation'
+                })
+        
+        return recommendations
+    
+    def _display_topology_results(self, results):
+        """Display comprehensive topology analysis results"""
+        print(f"\n📊 NETWORK CONNECTIVITY ANALYSIS")
+        print(f"Overall Status: {results['overall_status'].upper()}")
+        print(f"Connectivity: {results['connectivity_status'].upper()}")
+        print(f"Total Network Elements: {results['total_buses']} buses, {results['total_lines']} lines, {results['total_switches']} switches")
+        
+        # Network Islands
+        print(f"\n🏝️  NETWORK ISLANDS: {len(results['network_islands'])}")
+        if results['network_islands']:
+            for island in results['network_islands']:
+                print(f"   Island {island['island_id']}: {island['bus_count']} buses (IDs: {island['bus_ids']})")
+        else:
+            print("   No islands detected")
+        
+        # Isolated Buses
+        print(f"\n🔴 ISOLATED BUSES: {len(results['isolated_buses'])}")
+        if results['isolated_buses']:
+            for bus in results['isolated_buses']:
+                print(f"   Bus {bus['bus_id']}: {bus['bus_name']} - No connections")
+        else:
+            print("   No isolated buses")
+        
+        # Radial Connections
+        print(f"\n📡 RADIAL CONNECTIONS: {len(results['radial_connections'])}")
+        if results['radial_connections']:
+            for radial in results['radial_connections']:
+                print(f"   Bus {radial['bus_id']}: {radial['bus_name']} - Connected only to Bus {radial['connected_to']}")
+        else:
+            print("   No radial connections")
+        
+        # Switch Issues
+        print(f"\n🔧 SWITCH ISSUES: {len(results['switch_issues'])}")
+        if results['switch_issues']:
+            for issue in results['switch_issues']:
+                severity_icon = "🔴" if issue['severity'] == 'high' else "🟡" if issue['severity'] == 'medium' else "🟢"
+                print(f"   {severity_icon} {issue['switch_name']}: {issue['description']} - {issue['impact']}")
+        else:
+            print("   No switch issues detected")
+        
+        # Recommendations
+        print(f"\n💡 RECOMMENDATIONS: {len(results['recommendations'])}")
+        if results['recommendations']:
+            for rec in results['recommendations']:
+                priority_icon = "🔴" if rec['priority'] == 'high' else "🟡" if rec['priority'] == 'medium' else "🟢"
+                print(f"   {priority_icon} {rec['description']}")
+                print(f"      Action: {rec['action']}")
+        else:
+            print("   Network topology is acceptable")
+        
+        print("=" * 70)
+    
+    def get_measurement_info(self):
+        """Get detailed information about all measurements"""
+        if self.net is None or len(self.net.measurement) == 0:
+            return []
+        
+        measurement_info = []
+        for idx in self.net.measurement.index:
+            meas_data = self.net.measurement.loc[idx]
+            
+            # Get element name and description
+            element_name, element_desc = self._get_element_description(meas_data)
+            
+            measurement_info.append({
+                'index': idx,
+                'type': meas_data['measurement_type'],
+                'element': meas_data['element'],
+                'element_name': element_name,
+                'element_description': element_desc,
+                'value': meas_data['value'],
+                'std_dev': meas_data['std_dev'],
+                'side': meas_data.get('side', ''),
+                'active': True  # Will be used to track removed measurements
+            })
+        
+        return measurement_info
+    
+    def _get_element_description(self, measurement_data):
+        """Get descriptive name and description for measurement element"""
+        mtype = measurement_data['measurement_type']
+        element_idx = measurement_data['element']
+        side = measurement_data.get('side', '')
+        
+        if mtype == 'v':  # Voltage measurement
+            element_name = f"Bus {element_idx}"
+            element_desc = f"Voltage magnitude at {element_name}"
+            
+        elif mtype in ['p', 'q']:  # Power flow measurements
+            if element_idx in self.net.line.index:
+                from_bus = self.net.line.from_bus.iloc[element_idx]
+                to_bus = self.net.line.to_bus.iloc[element_idx]
+                element_name = f"Line {element_idx} ({from_bus}-{to_bus})"
+                power_type = "Active power" if mtype == 'p' else "Reactive power"
+                side_desc = f" from {side} side" if side else ""
+                element_desc = f"{power_type} flow on {element_name}{side_desc}"
+            else:
+                element_name = f"Element {element_idx}"
+                element_desc = f"Power measurement on {element_name}"
+        else:
+            element_name = f"Element {element_idx}"
+            element_desc = f"{mtype.upper()} measurement on {element_name}"
+        
+        return element_name, element_desc
+    
+    def remove_measurements(self, measurement_indices):
+        """Remove measurements by index"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        if not isinstance(measurement_indices, list):
+            measurement_indices = [measurement_indices]
+        
+        # Backup current measurements if not already backed up
+        if not hasattr(self, '_measurement_backup'):
+            self.backup_measurements()
+        
+        removed_count = 0
+        errors = []
+        
+        for idx in measurement_indices:
+            if idx in self.net.measurement.index:
+                try:
+                    self.net.measurement.drop(idx, inplace=True)
+                    removed_count += 1
+                except Exception as e:
+                    errors.append(f"Failed to remove measurement {idx}: {e}")
+            else:
+                errors.append(f"Measurement {idx} not found")
+        
+        # Reset index to maintain consistency
+        self.net.measurement.reset_index(drop=True, inplace=True)
+        
+        success = removed_count > 0
+        message = f"Removed {removed_count} measurements"
+        if errors:
+            message += f". Errors: {'; '.join(errors)}"
+        
+        return success, message
+    
+    def remove_measurements_by_type(self, measurement_type, element_filter=None):
+        """Remove measurements by type (e.g., 'v', 'p', 'q')"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        # Find measurements matching criteria
+        mask = self.net.measurement['measurement_type'] == measurement_type
+        
+        if element_filter is not None:
+            if isinstance(element_filter, list):
+                mask = mask & self.net.measurement['element'].isin(element_filter)
+            else:
+                mask = mask & (self.net.measurement['element'] == element_filter)
+        
+        matching_indices = self.net.measurement[mask].index.tolist()
+        
+        if not matching_indices:
+            return False, f"No {measurement_type} measurements found"
+        
+        return self.remove_measurements(matching_indices)
+    
+    def remove_measurements_by_element(self, element_indices, measurement_type=None):
+        """Remove measurements on specific elements"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        if not isinstance(element_indices, list):
+            element_indices = [element_indices]
+        
+        # Find measurements on specified elements
+        mask = self.net.measurement['element'].isin(element_indices)
+        
+        if measurement_type is not None:
+            mask = mask & (self.net.measurement['measurement_type'] == measurement_type)
+        
+        matching_indices = self.net.measurement[mask].index.tolist()
+        
+        if not matching_indices:
+            return False, f"No measurements found on specified elements"
+        
+        return self.remove_measurements(matching_indices)
+    
+    def backup_measurements(self):
+        """Create backup of current measurement set"""
+        if self.net is None or len(self.net.measurement) == 0:
+            return False
+        
+        self._measurement_backup = self.net.measurement.copy()
+        return True
+    
+    def restore_measurements(self):
+        """Restore measurements from backup"""
+        if not hasattr(self, '_measurement_backup'):
+            return False, "No measurement backup available"
+        
+        self.net.measurement = self._measurement_backup.copy()
+        return True, f"Restored {len(self.net.measurement)} measurements"
+    
+    def simulate_measurement_failures(self, failure_rate=0.1, failure_types=['random', 'systematic']):
+        """Simulate measurement failures by removing measurements"""
+        if self.net is None or len(self.net.measurement) == 0:
+            return False, "No measurements available"
+        
+        # Backup measurements
+        self.backup_measurements()
+        
+        original_count = len(self.net.measurement)
+        
+        if 'random' in failure_types:
+            # Random measurement failures
+            n_random_failures = max(1, int(original_count * failure_rate))
+            random_indices = np.random.choice(self.net.measurement.index, 
+                                            size=min(n_random_failures, len(self.net.measurement)), 
+                                            replace=False)
+            success, msg = self.remove_measurements(random_indices.tolist())
+        
+        if 'systematic' in failure_types:
+            # Systematic failures (e.g., all voltage measurements on certain buses)
+            voltage_measurements = self.net.measurement[self.net.measurement['measurement_type'] == 'v']
+            if len(voltage_measurements) > 0:
+                # Remove voltage measurements from random buses
+                n_bus_failures = max(1, int(len(voltage_measurements) * failure_rate * 0.5))
+                failed_buses = np.random.choice(voltage_measurements['element'].unique(), 
+                                              size=min(n_bus_failures, len(voltage_measurements['element'].unique())),
+                                              replace=False)
+                success, msg = self.remove_measurements_by_element(failed_buses.tolist(), 'v')
+        
+        current_count = len(self.net.measurement)
+        removed_count = original_count - current_count
+        
+        return True, f"Simulated failures: removed {removed_count} measurements ({removed_count/original_count*100:.1f}%)"
+    
+    def get_measurement_statistics(self):
+        """Get statistics about current measurement set"""
+        if self.net is None or len(self.net.measurement) == 0:
+            return {}
+        
+        stats = {
+            'total_measurements': len(self.net.measurement),
+            'by_type': {},
+            'by_element': {},
+            'coverage': {}
+        }
+        
+        # Count by measurement type
+        for mtype in self.net.measurement['measurement_type'].unique():
+            count = len(self.net.measurement[self.net.measurement['measurement_type'] == mtype])
+            stats['by_type'][mtype] = count
+        
+        # Coverage analysis
+        total_buses = len(self.net.bus)
+        total_lines = len(self.net.line)
+        
+        # Voltage measurement coverage
+        voltage_measurements = self.net.measurement[self.net.measurement['measurement_type'] == 'v']
+        voltage_coverage = len(voltage_measurements['element'].unique()) if len(voltage_measurements) > 0 else 0
+        
+        # Power flow measurement coverage
+        power_measurements = self.net.measurement[self.net.measurement['measurement_type'].isin(['p', 'q'])]
+        power_coverage = len(power_measurements['element'].unique()) if len(power_measurements) > 0 else 0
+        
+        stats['coverage'] = {
+            'voltage_buses': voltage_coverage,
+            'voltage_percentage': (voltage_coverage / total_buses * 100) if total_buses > 0 else 0,
+            'power_lines': power_coverage,
+            'power_percentage': (power_coverage / total_lines * 100) if total_lines > 0 else 0
+        }
+        
+        return stats
+    
+    def check_measurement_redundancy(self):
+        """Check measurement redundancy for observability"""
+        if self.net is None or len(self.net.measurement) == 0:
+            return {}
+        
+        stats = self.get_measurement_statistics()
+        redundancy_info = {
+            'sufficient_measurements': False,
+            'redundancy_ratio': 0,
+            'critical_measurements': [],
+            'recommendations': []
+        }
+        
+        # Basic redundancy check (simplified)
+        n_buses = len(self.net.bus)
+        n_measurements = len(self.net.measurement)
+        
+        # Minimum measurements needed: n_buses - 1 (for voltage) + additional for observability
+        min_required = n_buses - 1
+        redundancy_info['sufficient_measurements'] = n_measurements >= min_required
+        redundancy_info['redundancy_ratio'] = n_measurements / min_required if min_required > 0 else 0
+        
+        # Check for critical measurements (elements with only one measurement)
+        element_counts = {}
+        for idx, row in self.net.measurement.iterrows():
+            key = f"{row['measurement_type']}_{row['element']}"
+            element_counts[key] = element_counts.get(key, 0) + 1
+        
+        critical_measurements = [key for key, count in element_counts.items() if count == 1]
+        redundancy_info['critical_measurements'] = critical_measurements
+        
+        # Recommendations
+        if not redundancy_info['sufficient_measurements']:
+            redundancy_info['recommendations'].append("Add more measurements for observability")
+        
+        if critical_measurements:
+            redundancy_info['recommendations'].append(f"Consider adding redundant measurements for {len(critical_measurements)} critical points")
+        
+        return redundancy_info
         
     def simulate_measurements(self, noise_level=0.02):
         """Simulate measurement values with configurable noise"""
@@ -2374,6 +3098,1282 @@ class GridStateEstimator:
         except Exception as e:
             print(f"Simple network plot failed: {e}")
             print("Grid visualization not available.")
+    
+    def identify_missing_measurements(self):
+        """Identify what measurements are missing for optimal coverage"""
+        if self.net is None:
+            return {}
+        
+        missing_info = {
+            'missing_voltage_measurements': [],
+            'missing_power_measurements': [],
+            'recommendations': [],
+            'total_missing': 0
+        }
+        
+        # Check for missing voltage measurements
+        measured_buses = set()
+        if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+            voltage_measurements = self.net.measurement[self.net.measurement['measurement_type'] == 'v']
+            measured_buses = set(voltage_measurements['element'].values)
+        
+        all_buses = set(self.net.bus.index)
+        missing_voltage_buses = all_buses - measured_buses
+        
+        for bus_idx in missing_voltage_buses:
+            bus_name = self.net.bus.loc[bus_idx, 'name'] if 'name' in self.net.bus.columns else f"Bus {bus_idx}"
+            missing_info['missing_voltage_measurements'].append({
+                'bus_index': bus_idx,
+                'bus_name': bus_name,
+                'measurement_type': 'v',
+                'description': f"Voltage magnitude at {bus_name}"
+            })
+        
+        # Check for missing power flow measurements
+        measured_lines = set()
+        if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+            power_measurements = self.net.measurement[self.net.measurement['measurement_type'].isin(['p', 'q'])]
+            measured_lines = set(power_measurements['element'].values)
+        
+        all_lines = set(self.net.line.index)
+        missing_power_lines = all_lines - measured_lines
+        
+        for line_idx in missing_power_lines:
+            line_data = self.net.line.loc[line_idx]
+            from_bus = line_data['from_bus']
+            to_bus = line_data['to_bus']
+            line_name = line_data.get('name', f"Line {line_idx}")
+            
+            for mtype, desc in [('p', 'Active power'), ('q', 'Reactive power')]:
+                missing_info['missing_power_measurements'].append({
+                    'line_index': line_idx,
+                    'line_name': line_name,
+                    'from_bus': from_bus,
+                    'to_bus': to_bus,
+                    'measurement_type': mtype,
+                    'description': f"{desc} flow on {line_name} ({from_bus}-{to_bus})"
+                })
+        
+        # Generate recommendations
+        total_missing = len(missing_info['missing_voltage_measurements']) + len(missing_info['missing_power_measurements'])
+        missing_info['total_missing'] = total_missing
+        
+        if len(missing_voltage_buses) > 0:
+            missing_info['recommendations'].append(f"Add voltage measurements at {len(missing_voltage_buses)} buses for full coverage")
+        
+        if len(missing_power_lines) > 0:
+            missing_info['recommendations'].append(f"Add power flow measurements on {len(missing_power_lines)} lines")
+        
+        # Priority recommendations
+        if len(missing_voltage_buses) > len(self.net.bus) * 0.5:
+            missing_info['recommendations'].append("Priority: Add voltage measurements at critical buses first")
+        
+        return missing_info
+    
+    def estimate_missing_measurements(self, method='interpolation', noise_level=0.02):
+        """Estimate values for missing measurements using various methods"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        try:
+            # First, run load flow to get true values if we don't have estimation results
+            if not hasattr(self.net, 'res_bus') or self.net.res_bus is None:
+                pp.runpp(self.net, verbose=False)
+            
+            # Identify missing measurements
+            missing_info = self.identify_missing_measurements()
+            
+            if missing_info['total_missing'] == 0:
+                return True, "No missing measurements found - full coverage achieved"
+            
+            added_count = 0
+            estimation_details = []
+            
+            # Add missing voltage measurements
+            for missing_v in missing_info['missing_voltage_measurements']:
+                bus_idx = missing_v['bus_index']
+                
+                if method == 'interpolation':
+                    # Use neighboring bus voltages for interpolation
+                    estimated_value = self._interpolate_bus_voltage(bus_idx)
+                elif method == 'load_flow':
+                    # Use load flow result
+                    estimated_value = self.net.res_bus.loc[bus_idx, 'vm_pu']
+                else:
+                    # Default to load flow
+                    estimated_value = self.net.res_bus.loc[bus_idx, 'vm_pu']
+                
+                # Add noise to make it realistic
+                if noise_level > 0:
+                    noise = np.random.normal(0, estimated_value * noise_level)
+                    estimated_value += noise
+                
+                # Create measurement
+                pp.create_measurement(
+                    self.net, 
+                    meas_type='v', 
+                    element_type='bus', 
+                    value=estimated_value,
+                    std_dev=estimated_value * noise_level if noise_level > 0 else estimated_value * 0.01,
+                    element=bus_idx
+                )
+                
+                added_count += 1
+                estimation_details.append(f"V at bus {bus_idx}: {estimated_value:.4f} pu (estimated)")
+            
+            # Add missing power flow measurements (sample - add some, not all to avoid overloading)
+            max_power_additions = min(len(missing_info['missing_power_measurements']) // 2, 10)  # Limit additions
+            power_measurements_to_add = missing_info['missing_power_measurements'][:max_power_additions]
+            
+            for missing_p in power_measurements_to_add:
+                line_idx = missing_p['line_index']
+                mtype = missing_p['measurement_type']
+                
+                if method == 'interpolation':
+                    estimated_value = self._interpolate_line_power(line_idx, mtype)
+                elif method == 'load_flow':
+                    if mtype == 'p':
+                        estimated_value = self.net.res_line.loc[line_idx, 'p_from_mw']
+                    else:  # q
+                        estimated_value = self.net.res_line.loc[line_idx, 'q_from_mvar']
+                else:
+                    if mtype == 'p':
+                        estimated_value = self.net.res_line.loc[line_idx, 'p_from_mw']
+                    else:
+                        estimated_value = self.net.res_line.loc[line_idx, 'q_from_mvar']
+                
+                # Add noise
+                if noise_level > 0:
+                    noise = np.random.normal(0, abs(estimated_value) * noise_level)
+                    estimated_value += noise
+                
+                # Create measurement
+                pp.create_measurement(
+                    self.net,
+                    meas_type=mtype,
+                    element_type='line',
+                    value=estimated_value,
+                    std_dev=abs(estimated_value) * noise_level if noise_level > 0 else abs(estimated_value) * 0.01,
+                    element=line_idx,
+                    side='from'
+                )
+                
+                added_count += 1
+                estimation_details.append(f"{mtype.upper()} on line {line_idx}: {estimated_value:.2f} MW/MVAr (estimated)")
+            
+            summary = f"Added {added_count} estimated measurements using {method} method"
+            if noise_level > 0:
+                summary += f" with {noise_level*100:.1f}% noise"
+            
+            return True, {
+                'summary': summary,
+                'added_count': added_count,
+                'method': method,
+                'noise_level': noise_level,
+                'details': estimation_details[:10],  # Limit details shown
+                'total_available': missing_info['total_missing']
+            }
+            
+        except Exception as e:
+            return False, f"Error estimating missing measurements: {e}"
+    
+    def _interpolate_bus_voltage(self, target_bus_idx):
+        """Interpolate voltage at a bus using neighboring buses"""
+        try:
+            # Find connected buses through lines
+            connected_buses = []
+            
+            # Check lines where this bus is from_bus
+            from_lines = self.net.line[self.net.line['from_bus'] == target_bus_idx]
+            connected_buses.extend(from_lines['to_bus'].tolist())
+            
+            # Check lines where this bus is to_bus  
+            to_lines = self.net.line[self.net.line['to_bus'] == target_bus_idx]
+            connected_buses.extend(to_lines['from_bus'].tolist())
+            
+            # Get voltage measurements from connected buses
+            if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+                voltage_measurements = self.net.measurement[
+                    (self.net.measurement['measurement_type'] == 'v') &
+                    (self.net.measurement['element'].isin(connected_buses))
+                ]
+                
+                if len(voltage_measurements) > 0:
+                    # Use average of connected bus voltages
+                    return voltage_measurements['value'].mean()
+            
+            # Fallback: use load flow result if available, else nominal voltage
+            if hasattr(self.net, 'res_bus') and self.net.res_bus is not None:
+                return self.net.res_bus.loc[target_bus_idx, 'vm_pu']
+            else:
+                return 1.0  # Nominal voltage
+                
+        except Exception:
+            return 1.0  # Safe default
+    
+    def _interpolate_line_power(self, line_idx, measurement_type):
+        """Interpolate power flow on a line using neighboring measurements"""
+        try:
+            line_data = self.net.line.loc[line_idx]
+            
+            # Try to use load flow result as basis
+            if hasattr(self.net, 'res_line') and self.net.res_line is not None:
+                if measurement_type == 'p':
+                    base_value = self.net.res_line.loc[line_idx, 'p_from_mw']
+                else:  # q
+                    base_value = self.net.res_line.loc[line_idx, 'q_from_mvar']
+                
+                return base_value
+            
+            # Fallback: estimate based on line parameters and typical loading
+            if measurement_type == 'p':
+                # Rough estimate: 30-70% of line capacity
+                return np.random.uniform(10, 50)  # MW - typical range
+            else:  # q
+                return np.random.uniform(-10, 20)  # MVAr - typical range
+                
+        except Exception:
+            # Safe defaults
+            return 25.0 if measurement_type == 'p' else 5.0
+    
+    def add_strategic_measurements(self, target_observability='excellent'):
+        """Add measurements strategically to achieve target observability level"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        try:
+            # Analyze current observability
+            current_obs = self.test_observability()
+            
+            if current_obs and current_obs.get('level') == 'Excellent':
+                return True, "System already has excellent observability"
+            
+            # Get missing measurement analysis
+            missing_info = self.identify_missing_measurements()
+            
+            added_count = 0
+            strategy_details = []
+            
+            # Strategy 1: Ensure all buses have voltage measurements
+            critical_buses = []
+            measured_buses = set()
+            
+            if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+                voltage_measurements = self.net.measurement[self.net.measurement['measurement_type'] == 'v']
+                measured_buses = set(voltage_measurements['element'].values)
+            
+            # Add voltage measurements to unmeasured buses
+            unmeasured_buses = set(self.net.bus.index) - measured_buses
+            for bus_idx in list(unmeasured_buses)[:3]:  # Add to first 3 unmeasured buses
+                voltage_value = self._interpolate_bus_voltage(bus_idx)
+                
+                pp.create_measurement(
+                    self.net,
+                    meas_type='v',
+                    element_type='bus',
+                    value=voltage_value,
+                    std_dev=voltage_value * 0.02,  # 2% uncertainty
+                    element=bus_idx
+                )
+                
+                added_count += 1
+                strategy_details.append(f"Added voltage measurement at bus {bus_idx}")
+            
+            # Strategy 2: Add key power flow measurements
+            if len(self.net.line) > 0:
+                # Add measurements to first few lines for redundancy
+                for line_idx in list(self.net.line.index)[:2]:
+                    for mtype in ['p', 'q']:
+                        power_value = self._interpolate_line_power(line_idx, mtype)
+                        
+                        pp.create_measurement(
+                            self.net,
+                            meas_type=mtype,
+                            element_type='line',
+                            value=power_value,
+                            std_dev=abs(power_value) * 0.03,  # 3% uncertainty
+                            element=line_idx,
+                            side='from'
+                        )
+                        
+                        added_count += 1
+                        strategy_details.append(f"Added {mtype} measurement on line {line_idx}")
+            
+            return True, {
+                'summary': f"Added {added_count} strategic measurements for {target_observability} observability",
+                'added_count': added_count,
+                'strategy': 'voltage_priority_with_power_redundancy',
+                'details': strategy_details
+            }
+            
+        except Exception as e:
+            return False, f"Error adding strategic measurements: {e}"
+    
+    def identify_pseudomeasurement_locations(self):
+        """Identify where pseudomeasurements are needed for observability"""
+        if self.net is None:
+            return {}
+        
+        pseudomeasurement_info = {
+            'voltage_pseudomeasurements': [],
+            'power_injection_pseudomeasurements': [],
+            'zero_injection_buses': [],
+            'slack_bus_pseudomeasurements': [],
+            'recommendations': [],
+            'total_needed': 0
+        }
+        
+        try:
+            # Identify missing voltage measurements
+            measured_buses = set()
+            if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+                voltage_measurements = self.net.measurement[self.net.measurement['measurement_type'] == 'v']
+                measured_buses = set(voltage_measurements['element'].values)
+            
+            unmeasured_buses = set(self.net.bus.index) - measured_buses
+            
+            # For unmeasured buses, create voltage pseudomeasurements
+            for bus_idx in unmeasured_buses:
+                bus_name = self.net.bus.loc[bus_idx, 'name'] if 'name' in self.net.bus.columns else f"Bus {bus_idx}"
+                pseudomeasurement_info['voltage_pseudomeasurements'].append({
+                    'bus_index': bus_idx,
+                    'bus_name': bus_name,
+                    'type': 'voltage_pseudo',
+                    'description': f"Voltage pseudomeasurement at {bus_name}",
+                    'nominal_value': 1.0,  # p.u.
+                    'uncertainty': 0.05    # 5% uncertainty (high for pseudo)
+                })
+            
+            # Identify zero injection buses (buses with no generation or load)
+            zero_injection_candidates = []
+            for bus_idx in self.net.bus.index:
+                # Check if bus has generators
+                has_gen = bus_idx in self.net.gen['bus'].values if len(self.net.gen) > 0 else False
+                # Check if bus has loads
+                has_load = bus_idx in self.net.load['bus'].values if len(self.net.load) > 0 else False
+                
+                if not has_gen and not has_load:
+                    zero_injection_candidates.append(bus_idx)
+            
+            # Add zero injection pseudomeasurements
+            for bus_idx in zero_injection_candidates:
+                bus_name = self.net.bus.loc[bus_idx, 'name'] if 'name' in self.net.bus.columns else f"Bus {bus_idx}"
+                
+                # Zero active power injection
+                pseudomeasurement_info['zero_injection_buses'].append({
+                    'bus_index': bus_idx,
+                    'bus_name': bus_name,
+                    'type': 'zero_injection_p',
+                    'description': f"Zero active power injection at {bus_name}",
+                    'nominal_value': 0.0,   # MW
+                    'uncertainty': 0.01     # Very low uncertainty for zero injection
+                })
+                
+                # Zero reactive power injection
+                pseudomeasurement_info['zero_injection_buses'].append({
+                    'bus_index': bus_idx,
+                    'bus_name': bus_name,
+                    'type': 'zero_injection_q',
+                    'description': f"Zero reactive power injection at {bus_name}",
+                    'nominal_value': 0.0,   # MVAr
+                    'uncertainty': 0.01     # Very low uncertainty for zero injection
+                })
+            
+            # Add slack bus pseudomeasurement (voltage angle reference)
+            if hasattr(self.net, 'ext_grid') and len(self.net.ext_grid) > 0:
+                slack_bus = self.net.ext_grid['bus'].iloc[0]  # First slack bus
+                slack_name = self.net.bus.loc[slack_bus, 'name'] if 'name' in self.net.bus.columns else f"Bus {slack_bus}"
+                
+                pseudomeasurement_info['slack_bus_pseudomeasurements'].append({
+                    'bus_index': slack_bus,
+                    'bus_name': slack_name,
+                    'type': 'voltage_angle_reference',
+                    'description': f"Voltage angle reference at slack bus {slack_name}",
+                    'nominal_value': 0.0,   # degrees (reference)
+                    'uncertainty': 0.001    # Very low uncertainty for reference
+                })
+            
+            # Calculate total needed
+            total_needed = (len(pseudomeasurement_info['voltage_pseudomeasurements']) + 
+                           len(pseudomeasurement_info['zero_injection_buses']) +
+                           len(pseudomeasurement_info['slack_bus_pseudomeasurements']))
+            
+            pseudomeasurement_info['total_needed'] = total_needed
+            
+            # Generate recommendations
+            if len(pseudomeasurement_info['voltage_pseudomeasurements']) > 0:
+                count = len(pseudomeasurement_info['voltage_pseudomeasurements'])
+                pseudomeasurement_info['recommendations'].append(
+                    f"Add {count} voltage pseudomeasurements for unobserved buses"
+                )
+            
+            if len(zero_injection_candidates) > 0:
+                pseudomeasurement_info['recommendations'].append(
+                    f"Add zero injection pseudomeasurements at {len(zero_injection_candidates)} transit buses"
+                )
+            
+            if len(pseudomeasurement_info['slack_bus_pseudomeasurements']) > 0:
+                pseudomeasurement_info['recommendations'].append(
+                    "Add voltage angle reference pseudomeasurement at slack bus"
+                )
+            
+            if total_needed == 0:
+                pseudomeasurement_info['recommendations'].append(
+                    "No pseudomeasurements needed - system appears fully observable"
+                )
+            
+            return pseudomeasurement_info
+            
+        except Exception as e:
+            print(f"Error identifying pseudomeasurement locations: {e}")
+            return pseudomeasurement_info
+    
+    def add_pseudomeasurements(self, types=['voltage', 'zero_injection', 'slack_reference']):
+        """Add pseudomeasurements to improve system observability"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        try:
+            # Get pseudomeasurement analysis
+            pseudo_info = self.identify_pseudomeasurement_locations()
+            
+            if pseudo_info['total_needed'] == 0:
+                return True, "No pseudomeasurements needed - system is observable"
+            
+            added_count = 0
+            pseudomeasurement_details = []
+            
+            # Add voltage pseudomeasurements
+            if 'voltage' in types:
+                for pseudo in pseudo_info['voltage_pseudomeasurements']:
+                    bus_idx = pseudo['bus_index']
+                    nominal_value = pseudo['nominal_value']
+                    uncertainty = pseudo['uncertainty']
+                    
+                    # Get better estimate from load flow if available
+                    if hasattr(self.net, 'res_bus') and self.net.res_bus is not None:
+                        estimated_value = self.net.res_bus.loc[bus_idx, 'vm_pu']
+                    else:
+                        estimated_value = nominal_value
+                    
+                    # Create voltage pseudomeasurement
+                    pp.create_measurement(
+                        self.net,
+                        meas_type='v',
+                        element_type='bus',
+                        value=estimated_value,
+                        std_dev=estimated_value * uncertainty,
+                        element=bus_idx,
+                        name=f"V_pseudo_bus_{bus_idx}"
+                    )
+                    
+                    added_count += 1
+                    pseudomeasurement_details.append(
+                        f"Voltage pseudo at bus {bus_idx}: {estimated_value:.4f} ± {uncertainty*100:.1f}%"
+                    )
+            
+            # Add zero injection pseudomeasurements
+            if 'zero_injection' in types:
+                for pseudo in pseudo_info['zero_injection_buses']:
+                    bus_idx = pseudo['bus_index']
+                    mtype = 'p' if pseudo['type'] == 'zero_injection_p' else 'q'
+                    uncertainty = pseudo['uncertainty']
+                    
+                    # Create zero injection pseudomeasurement
+                    # Note: pandapower doesn't directly support injection measurements,
+                    # so we'll use a very small power flow measurement as approximation
+                    if len(self.net.line) > 0:
+                        # Find a line connected to this bus
+                        connected_lines = self.net.line[
+                            (self.net.line['from_bus'] == bus_idx) | 
+                            (self.net.line['to_bus'] == bus_idx)
+                        ]
+                        
+                        if not connected_lines.empty:
+                            line_idx = connected_lines.index[0]
+                            side = 'from' if self.net.line.loc[line_idx, 'from_bus'] == bus_idx else 'to'
+                            
+                            pp.create_measurement(
+                                self.net,
+                                meas_type=mtype,
+                                element_type='line',
+                                value=0.0,  # Zero injection
+                                std_dev=uncertainty,
+                                element=line_idx,
+                                side=side,
+                                name=f"{mtype}_zero_bus_{bus_idx}"
+                            )
+                            
+                            added_count += 1
+                            pseudomeasurement_details.append(
+                                f"Zero {mtype.upper()} injection at bus {bus_idx}: 0.0 ± {uncertainty:.3f}"
+                            )
+            
+            # Add slack bus reference (voltage angle)
+            if 'slack_reference' in types and pseudo_info['slack_bus_pseudomeasurements']:
+                # Note: Voltage angle measurements are not directly supported in basic pandapower
+                # This would typically be handled by the state estimator internally
+                for pseudo in pseudo_info['slack_bus_pseudomeasurements']:
+                    pseudomeasurement_details.append(
+                        f"Slack reference at bus {pseudo['bus_index']} (handled by state estimator)"
+                    )
+            
+            return True, {
+                'summary': f"Added {added_count} pseudomeasurements for observability",
+                'added_count': added_count,
+                'types': types,
+                'details': pseudomeasurement_details[:10],  # Limit details shown
+                'total_identified': pseudo_info['total_needed']
+            }
+            
+        except Exception as e:
+            return False, f"Error adding pseudomeasurements: {e}"
+    
+    def remove_pseudomeasurements(self):
+        """Remove all pseudomeasurements (measurements with 'pseudo' in name)"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        try:
+            if not hasattr(self.net, 'measurement') or len(self.net.measurement) == 0:
+                return True, "No measurements to remove"
+            
+            # Find pseudomeasurements by name pattern
+            pseudo_indices = []
+            for idx in self.net.measurement.index:
+                if 'name' in self.net.measurement.columns:
+                    name = str(self.net.measurement.loc[idx, 'name'])
+                    if 'pseudo' in name.lower() or 'zero' in name.lower():
+                        pseudo_indices.append(idx)
+            
+            if not pseudo_indices:
+                return True, "No pseudomeasurements found"
+            
+            # Remove pseudomeasurements
+            removed_count = 0
+            for idx in pseudo_indices:
+                try:
+                    self.net.measurement.drop(idx, inplace=True)
+                    removed_count += 1
+                except Exception:
+                    pass
+            
+            return True, f"Removed {removed_count} pseudomeasurements"
+            
+        except Exception as e:
+            return False, f"Error removing pseudomeasurements: {e}"
+    
+    def get_pseudomeasurement_summary(self):
+        """Get summary of current pseudomeasurements"""
+        if self.net is None or not hasattr(self.net, 'measurement'):
+            return {}
+        
+        summary = {
+            'total_measurements': len(self.net.measurement),
+            'pseudomeasurements': 0,
+            'real_measurements': 0,
+            'pseudo_types': {},
+            'pseudo_details': []
+        }
+        
+        try:
+            for idx in self.net.measurement.index:
+                if 'name' in self.net.measurement.columns:
+                    name = str(self.net.measurement.loc[idx, 'name'])
+                    if 'pseudo' in name.lower() or 'zero' in name.lower():
+                        summary['pseudomeasurements'] += 1
+                        
+                        # Categorize by type
+                        mtype = self.net.measurement.loc[idx, 'measurement_type']
+                        element = self.net.measurement.loc[idx, 'element']
+                        value = self.net.measurement.loc[idx, 'value']
+                        
+                        pseudo_type = f"{mtype}_pseudo"
+                        summary['pseudo_types'][pseudo_type] = summary['pseudo_types'].get(pseudo_type, 0) + 1
+                        
+                        summary['pseudo_details'].append({
+                            'index': idx,
+                            'type': mtype,
+                            'element': element,
+                            'value': value,
+                            'name': name,
+                            'description': f"{mtype.upper()} pseudomeasurement at element {element}"
+                        })
+                    else:
+                        summary['real_measurements'] += 1
+                else:
+                    summary['real_measurements'] += 1
+            
+            return summary
+            
+        except Exception as e:
+            print(f"Error getting pseudomeasurement summary: {e}")
+            return summary
+    
+    def analyze_measurement_gaps(self):
+        """Analyze measurement gaps and their impact on observability"""
+        if self.net is None:
+            return {}
+        
+        analysis = {
+            'gap_summary': {},
+            'critical_gaps': [],
+            'observability_impact': {},
+            'recommendations': []
+        }
+        
+        try:
+            # Analyze voltage measurement gaps
+            all_buses = set(self.net.bus.index)
+            measured_voltage_buses = set()
+            
+            if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+                voltage_measurements = self.net.measurement[self.net.measurement['measurement_type'] == 'v']
+                measured_voltage_buses = set(voltage_measurements['element'].values)
+            
+            voltage_gaps = all_buses - measured_voltage_buses
+            analysis['gap_summary']['voltage_gaps'] = {
+                'count': len(voltage_gaps),
+                'buses': list(voltage_gaps),
+                'percentage': (len(voltage_gaps) / len(all_buses)) * 100
+            }
+            
+            # Analyze power flow measurement gaps
+            all_lines = set(self.net.line.index)
+            measured_power_lines = set()
+            
+            if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+                power_measurements = self.net.measurement[
+                    self.net.measurement['measurement_type'].isin(['p', 'q'])
+                ]
+                measured_power_lines = set(power_measurements['element'].values)
+            
+            power_gaps = all_lines - measured_power_lines
+            analysis['gap_summary']['power_gaps'] = {
+                'count': len(power_gaps),
+                'lines': list(power_gaps),
+                'percentage': (len(power_gaps) / len(all_lines)) * 100 if len(all_lines) > 0 else 0
+            }
+            
+            # Identify critical gaps (buses/lines that are central to network topology)
+            # Critical voltage gaps: high-degree buses
+            bus_degrees = {}
+            for bus in self.net.bus.index:
+                connected_lines = len(self.net.line[
+                    (self.net.line['from_bus'] == bus) | (self.net.line['to_bus'] == bus)
+                ])
+                bus_degrees[bus] = connected_lines
+            
+            # Critical buses are those with many connections and no voltage measurement
+            critical_voltage_gaps = []
+            for bus in voltage_gaps:
+                if bus_degrees.get(bus, 0) >= 3:  # Buses with 3+ connections
+                    critical_voltage_gaps.append({
+                        'bus': bus,
+                        'connections': bus_degrees[bus],
+                        'type': 'critical_voltage_gap',
+                        'description': f"High-degree bus {bus} ({bus_degrees[bus]} connections) lacks voltage measurement"
+                    })
+            
+            analysis['critical_gaps'] = critical_voltage_gaps
+            
+            # Calculate observability impact
+            current_obs = self.test_observability()
+            obs_level = current_obs.get('level', 'Unknown') if current_obs else 'Unknown'
+            
+            analysis['observability_impact'] = {
+                'current_level': obs_level,
+                'voltage_gap_impact': 'High' if len(voltage_gaps) > len(all_buses) * 0.3 else 'Medium' if len(voltage_gaps) > 0 else 'None',
+                'power_gap_impact': 'High' if len(power_gaps) > len(all_lines) * 0.5 else 'Medium' if len(power_gaps) > 0 else 'None'
+            }
+            
+            # Generate recommendations
+            if len(voltage_gaps) > 0:
+                analysis['recommendations'].append(
+                    f"Add voltage measurements to {len(voltage_gaps)} unmeasured buses"
+                )
+            
+            if len(critical_voltage_gaps) > 0:
+                analysis['recommendations'].append(
+                    f"Priority: Add voltage measurements to {len(critical_voltage_gaps)} critical buses"
+                )
+            
+            if len(power_gaps) > len(all_lines) * 0.3:
+                analysis['recommendations'].append(
+                    "Consider adding power flow measurements to improve redundancy"
+                )
+            
+            if not analysis['recommendations']:
+                analysis['recommendations'].append("Measurement coverage appears adequate")
+            
+            return analysis
+            
+        except Exception as e:
+            print(f"Error analyzing measurement gaps: {e}")
+            return analysis
+    
+    def add_intelligent_pseudomeasurements(self, strategy='adaptive', target_redundancy=1.5):
+        """Add pseudomeasurements using intelligent placement strategies"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        try:
+            # Analyze current state
+            gap_analysis = self.analyze_measurement_gaps()
+            current_obs = self.test_observability()
+            
+            added_count = 0
+            strategy_details = []
+            
+            if strategy == 'adaptive':
+                # Adaptive strategy: prioritize based on topology and observability impact
+                
+                # 1. First add voltage measurements to critical buses
+                critical_gaps = gap_analysis.get('critical_gaps', [])
+                for gap in critical_gaps:
+                    bus_idx = gap['bus']
+                    
+                    # Estimate voltage from neighboring buses if possible
+                    estimated_voltage = self._estimate_bus_voltage(bus_idx)
+                    uncertainty = 0.03  # Lower uncertainty for critical buses
+                    
+                    pp.create_measurement(
+                        self.net,
+                        meas_type='v',
+                        element_type='bus',
+                        value=estimated_voltage,
+                        std_dev=estimated_voltage * uncertainty,
+                        element=bus_idx,
+                        name=f"V_adaptive_critical_bus_{bus_idx}"
+                    )
+                    
+                    added_count += 1
+                    strategy_details.append(f"Critical voltage measurement at bus {bus_idx}: {estimated_voltage:.4f} ± {uncertainty*100:.1f}%")
+                
+                # 2. Add voltage measurements to remaining unmeasured buses
+                voltage_gaps = gap_analysis['gap_summary']['voltage_gaps']['buses']
+                remaining_gaps = [bus for bus in voltage_gaps if bus not in [gap['bus'] for gap in critical_gaps]]
+                
+                for bus_idx in remaining_gaps:
+                    estimated_voltage = self._estimate_bus_voltage(bus_idx)
+                    uncertainty = 0.05  # Standard uncertainty for regular buses
+                    
+                    pp.create_measurement(
+                        self.net,
+                        meas_type='v',
+                        element_type='bus',
+                        value=estimated_voltage,
+                        std_dev=estimated_voltage * uncertainty,
+                        element=bus_idx,
+                        name=f"V_adaptive_bus_{bus_idx}"
+                    )
+                    
+                    added_count += 1
+                    strategy_details.append(f"Adaptive voltage measurement at bus {bus_idx}: {estimated_voltage:.4f} ± {uncertainty*100:.1f}%")
+                
+                # 3. Add zero injection measurements at transit buses
+                zero_injection_buses = self._identify_zero_injection_buses()
+                for bus_idx in zero_injection_buses:
+                    # Add both P and Q zero injection measurements
+                    connected_lines = self.net.line[
+                        (self.net.line['from_bus'] == bus_idx) | 
+                        (self.net.line['to_bus'] == bus_idx)
+                    ]
+                    
+                    if not connected_lines.empty:
+                        line_idx = connected_lines.index[0]
+                        side = 'from' if self.net.line.loc[line_idx, 'from_bus'] == bus_idx else 'to'
+                        
+                        # Active power zero injection
+                        pp.create_measurement(
+                            self.net,
+                            meas_type='p',
+                            element_type='line',
+                            value=0.0,
+                            std_dev=0.001,  # Very low uncertainty for zero injection
+                            element=line_idx,
+                            side=side,
+                            name=f"P_zero_adaptive_bus_{bus_idx}"
+                        )
+                        
+                        # Reactive power zero injection
+                        pp.create_measurement(
+                            self.net,
+                            meas_type='q',
+                            element_type='line',
+                            value=0.0,
+                            std_dev=0.001,  # Very low uncertainty for zero injection
+                            element=line_idx,
+                            side=side,
+                            name=f"Q_zero_adaptive_bus_{bus_idx}"
+                        )
+                        
+                        added_count += 2
+                        strategy_details.append(f"Zero injection measurements at transit bus {bus_idx}")
+            
+            elif strategy == 'minimum_cost':
+                # Minimum cost strategy: add minimum measurements for observability
+                pseudo_info = self.identify_pseudomeasurement_locations()
+                
+                # Add only essential voltage measurements
+                for pseudo in pseudo_info['voltage_pseudomeasurements']:
+                    bus_idx = pseudo['bus_index']
+                    estimated_voltage = self._estimate_bus_voltage(bus_idx)
+                    
+                    pp.create_measurement(
+                        self.net,
+                        meas_type='v',
+                        element_type='bus',
+                        value=estimated_voltage,
+                        std_dev=estimated_voltage * 0.05,
+                        element=bus_idx,
+                        name=f"V_minimum_bus_{bus_idx}"
+                    )
+                    
+                    added_count += 1
+                    strategy_details.append(f"Minimum cost voltage measurement at bus {bus_idx}")
+            
+            elif strategy == 'maximum_redundancy':
+                # Maximum redundancy strategy: add measurements for high redundancy
+                current_redundancy = self._calculate_measurement_redundancy()
+                
+                while current_redundancy < target_redundancy and added_count < 50:  # Safety limit
+                    # Add voltage measurement to bus with lowest redundancy
+                    best_bus = self._find_lowest_redundancy_bus()
+                    if best_bus is None:
+                        break
+                    
+                    estimated_voltage = self._estimate_bus_voltage(best_bus)
+                    
+                    pp.create_measurement(
+                        self.net,
+                        meas_type='v',
+                        element_type='bus',
+                        value=estimated_voltage,
+                        std_dev=estimated_voltage * 0.04,  # Lower uncertainty for redundancy
+                        element=best_bus,
+                        name=f"V_redundancy_bus_{best_bus}"
+                    )
+                    
+                    added_count += 1
+                    strategy_details.append(f"Redundancy voltage measurement at bus {best_bus}")
+                    
+                    # Recalculate redundancy
+                    current_redundancy = self._calculate_measurement_redundancy()
+            
+            return True, {
+                'summary': f"Added {added_count} intelligent pseudomeasurements using {strategy} strategy",
+                'added_count': added_count,
+                'strategy': strategy,
+                'details': strategy_details[:10],  # Limit details shown
+                'final_redundancy': self._calculate_measurement_redundancy()
+            }
+            
+        except Exception as e:
+            return False, f"Error adding intelligent pseudomeasurements: {e}"
+    
+    def _estimate_bus_voltage(self, bus_idx):
+        """Estimate voltage for a bus based on load flow or neighboring buses"""
+        try:
+            # First try to use load flow results if available
+            if hasattr(self.net, 'res_bus') and self.net.res_bus is not None:
+                if bus_idx in self.net.res_bus.index:
+                    return self.net.res_bus.loc[bus_idx, 'vm_pu']
+            
+            # If no load flow results, estimate from neighboring buses
+            connected_lines = self.net.line[
+                (self.net.line['from_bus'] == bus_idx) | 
+                (self.net.line['to_bus'] == bus_idx)
+            ]
+            
+            if not connected_lines.empty:
+                neighbor_voltages = []
+                for _, line in connected_lines.iterrows():
+                    neighbor_bus = line['to_bus'] if line['from_bus'] == bus_idx else line['from_bus']
+                    
+                    # Check if neighbor has voltage measurement
+                    if hasattr(self.net, 'measurement'):
+                        neighbor_measurements = self.net.measurement[
+                            (self.net.measurement['measurement_type'] == 'v') & 
+                            (self.net.measurement['element'] == neighbor_bus)
+                        ]
+                        if not neighbor_measurements.empty:
+                            neighbor_voltages.append(neighbor_measurements['value'].iloc[0])
+                
+                # Use average of neighbor voltages or nominal value
+                if neighbor_voltages:
+                    return np.mean(neighbor_voltages)
+            
+            # Fall back to voltage level-based estimate
+            if bus_idx in self.net.bus.index:
+                voltage_level = self.net.bus.loc[bus_idx, 'vn_kv']
+                if voltage_level >= 300:  # Transmission level
+                    return 1.02  # Typical transmission voltage
+                elif voltage_level >= 100:  # Subtransmission
+                    return 1.01
+                else:  # Distribution
+                    return 1.00
+            
+            return 1.0  # Default nominal voltage
+            
+        except Exception:
+            return 1.0  # Safe fallback
+    
+    def _identify_zero_injection_buses(self):
+        """Identify buses with no generation or load (transit buses)"""
+        zero_injection_buses = []
+        
+        try:
+            for bus_idx in self.net.bus.index:
+                # Check if bus has generators
+                has_gen = bus_idx in self.net.gen['bus'].values if len(self.net.gen) > 0 else False
+                # Check if bus has loads
+                has_load = bus_idx in self.net.load['bus'].values if len(self.net.load) > 0 else False
+                # Check if bus has external grid connection
+                has_ext_grid = bus_idx in self.net.ext_grid['bus'].values if len(self.net.ext_grid) > 0 else False
+                
+                if not has_gen and not has_load and not has_ext_grid:
+                    zero_injection_buses.append(bus_idx)
+            
+            return zero_injection_buses
+            
+        except Exception:
+            return []
+    
+    def _calculate_measurement_redundancy(self):
+        """Calculate current measurement redundancy ratio"""
+        try:
+            if not hasattr(self.net, 'measurement') or len(self.net.measurement) == 0:
+                return 0.0
+            
+            total_measurements = len(self.net.measurement)
+            state_variables = 2 * len(self.net.bus) - 1  # V magnitude and angle (minus slack angle)
+            
+            return total_measurements / state_variables if state_variables > 0 else 0.0
+            
+        except Exception:
+            return 0.0
+    
+    def _find_lowest_redundancy_bus(self):
+        """Find the bus with lowest measurement redundancy"""
+        try:
+            if not hasattr(self.net, 'measurement'):
+                return None
+            
+            # Count measurements per bus
+            bus_measurement_count = {}
+            for bus_idx in self.net.bus.index:
+                count = 0
+                
+                # Count voltage measurements
+                voltage_measurements = self.net.measurement[
+                    (self.net.measurement['measurement_type'] == 'v') & 
+                    (self.net.measurement['element'] == bus_idx)
+                ]
+                count += len(voltage_measurements)
+                
+                # Count power measurements on connected lines
+                connected_lines = self.net.line[
+                    (self.net.line['from_bus'] == bus_idx) | 
+                    (self.net.line['to_bus'] == bus_idx)
+                ]
+                for _, line in connected_lines.iterrows():
+                    line_measurements = self.net.measurement[
+                        (self.net.measurement['measurement_type'].isin(['p', 'q'])) & 
+                        (self.net.measurement['element'] == line.name)
+                    ]
+                    count += len(line_measurements)
+                
+                bus_measurement_count[bus_idx] = count
+            
+            # Find bus with minimum measurements
+            if bus_measurement_count:
+                return min(bus_measurement_count, key=bus_measurement_count.get)
+            
+            return None
+            
+        except Exception:
+            return None
+    
+    def add_missing_critical_measurements(self, max_additions=10):
+        """Add pseudomeasurements specifically where measurements are missing in critical locations"""
+        if self.net is None:
+            return False, "No grid model available"
+        
+        try:
+            # Analyze current measurement gaps
+            gap_analysis = self.analyze_measurement_gaps()
+            
+            added_count = 0
+            critical_details = []
+            
+            # 1. Priority 1: Critical voltage gaps (high-degree buses without voltage measurements)
+            critical_gaps = gap_analysis.get('critical_gaps', [])
+            for gap in critical_gaps[:max_additions]:
+                if added_count >= max_additions:
+                    break
+                    
+                bus_idx = gap['bus']
+                connections = gap['connections']
+                
+                # Check if this bus already has a voltage measurement
+                existing_v_measurements = self.net.measurement[
+                    (self.net.measurement['measurement_type'] == 'v') & 
+                    (self.net.measurement['element'] == bus_idx)
+                ]
+                
+                if len(existing_v_measurements) == 0:
+                    # Add voltage measurement with lower uncertainty due to criticality
+                    estimated_voltage = self._estimate_bus_voltage(bus_idx)
+                    uncertainty = max(0.02, 0.05 - connections * 0.005)  # Lower uncertainty for more connected buses
+                    
+                    pp.create_measurement(
+                        self.net,
+                        meas_type='v',
+                        element_type='bus',
+                        value=estimated_voltage,
+                        std_dev=estimated_voltage * uncertainty,
+                        element=bus_idx,
+                        name=f"V_critical_missing_bus_{bus_idx}"
+                    )
+                    
+                    added_count += 1
+                    critical_details.append(
+                        f"Critical voltage measurement at high-degree bus {bus_idx} ({connections} connections): {estimated_voltage:.4f} ± {uncertainty*100:.1f}%"
+                    )
+            
+            # 2. Priority 2: Voltage measurements on buses with no measurements at all
+            all_buses = set(self.net.bus.index)
+            measured_voltage_buses = set()
+            
+            if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+                voltage_measurements = self.net.measurement[self.net.measurement['measurement_type'] == 'v']
+                measured_voltage_buses = set(voltage_measurements['element'].values)
+            
+            completely_unmeasured_buses = []
+            for bus_idx in all_buses - measured_voltage_buses:
+                if added_count >= max_additions:
+                    break
+                
+                # Check if this bus has any power measurements on connected lines
+                connected_lines = self.net.line[
+                    (self.net.line['from_bus'] == bus_idx) | 
+                    (self.net.line['to_bus'] == bus_idx)
+                ]
+                
+                has_power_measurement = False
+                for _, line in connected_lines.iterrows():
+                    line_measurements = self.net.measurement[
+                        (self.net.measurement['measurement_type'].isin(['p', 'q'])) & 
+                        (self.net.measurement['element'] == line.name)
+                    ]
+                    if len(line_measurements) > 0:
+                        has_power_measurement = True
+                        break
+                
+                if not has_power_measurement:
+                    completely_unmeasured_buses.append(bus_idx)
+            
+            # Add voltage measurements to completely unmeasured buses
+            for bus_idx in completely_unmeasured_buses[:max_additions - added_count]:
+                estimated_voltage = self._estimate_bus_voltage(bus_idx)
+                uncertainty = 0.06  # Higher uncertainty for isolated buses
+                
+                pp.create_measurement(
+                    self.net,
+                    meas_type='v',
+                    element_type='bus',
+                    value=estimated_voltage,
+                    std_dev=estimated_voltage * uncertainty,
+                    element=bus_idx,
+                    name=f"V_isolated_missing_bus_{bus_idx}"
+                )
+                
+                added_count += 1
+                critical_details.append(
+                    f"Isolated bus voltage measurement at bus {bus_idx}: {estimated_voltage:.4f} ± {uncertainty*100:.1f}%"
+                )
+            
+            # 3. Priority 3: Key power flow measurements on important lines
+            if added_count < max_additions:
+                # Find lines that connect different voltage levels or have high capacity
+                important_lines = []
+                
+                for _, line in self.net.line.iterrows():
+                    from_bus = line['from_bus']
+                    to_bus = line['to_bus']
+                    
+                    # Check if line connects buses at different voltage levels
+                    from_vn = self.net.bus.loc[from_bus, 'vn_kv']
+                    to_vn = self.net.bus.loc[to_bus, 'vn_kv']
+                    
+                    if abs(from_vn - to_vn) > 0.1:  # Different voltage levels
+                        important_lines.append((line.name, line, 'voltage_level_boundary'))
+                    elif line.get('max_i_ka', 0) > 1.0:  # High capacity line
+                        important_lines.append((line.name, line, 'high_capacity'))
+                
+                # Add power measurements to important lines that lack them
+                for line_idx, line, reason in important_lines[:max_additions - added_count]:
+                    # Check if line already has power measurements
+                    existing_p_measurements = self.net.measurement[
+                        (self.net.measurement['measurement_type'] == 'p') & 
+                        (self.net.measurement['element'] == line_idx)
+                    ]
+                    
+                    if len(existing_p_measurements) == 0:
+                        # Estimate power flow based on line loading
+                        estimated_power = 0.0  # Conservative estimate
+                        if hasattr(self.net, 'res_line') and line_idx in self.net.res_line.index:
+                            estimated_power = self.net.res_line.loc[line_idx, 'p_from_mw']
+                        
+                        pp.create_measurement(
+                            self.net,
+                            meas_type='p',
+                            element_type='line',
+                            value=estimated_power,
+                            std_dev=max(1.0, abs(estimated_power) * 0.05),  # 5% or minimum 1 MW
+                            element=line_idx,
+                            side='from',
+                            name=f"P_critical_missing_line_{line_idx}"
+                        )
+                        
+                        added_count += 1
+                        critical_details.append(
+                            f"Critical power measurement on {reason} line {line_idx}: {estimated_power:.2f} MW"
+                        )
+                        
+                        if added_count >= max_additions:
+                            break
+            
+            if added_count == 0:
+                return True, "No critical missing measurements identified - system appears well instrumented"
+            
+            return True, {
+                'summary': f"Added {added_count} critical missing measurements",
+                'added_count': added_count,
+                'details': critical_details,
+                'priorities_addressed': ['critical_voltage_gaps', 'isolated_buses', 'important_lines']
+            }
+            
+        except Exception as e:
+            return False, f"Error adding missing critical measurements: {e}"
+    
+    def get_measurement_coverage_report(self):
+        """Generate comprehensive report on measurement coverage and gaps"""
+        if self.net is None:
+            return {}
+        
+        report = {
+            'summary': {},
+            'voltage_coverage': {},
+            'power_coverage': {},
+            'topology_analysis': {},
+            'recommendations': []
+        }
+        
+        try:
+            # Overall summary
+            total_buses = len(self.net.bus)
+            total_lines = len(self.net.line)
+            total_measurements = len(self.net.measurement) if hasattr(self.net, 'measurement') else 0
+            
+            report['summary'] = {
+                'total_buses': total_buses,
+                'total_lines': total_lines,
+                'total_measurements': total_measurements,
+                'measurement_density': total_measurements / (total_buses + total_lines) if (total_buses + total_lines) > 0 else 0
+            }
+            
+            # Voltage coverage analysis
+            measured_voltage_buses = set()
+            if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+                voltage_measurements = self.net.measurement[self.net.measurement['measurement_type'] == 'v']
+                measured_voltage_buses = set(voltage_measurements['element'].values)
+            
+            unmeasured_buses = set(self.net.bus.index) - measured_voltage_buses
+            
+            report['voltage_coverage'] = {
+                'measured_buses': len(measured_voltage_buses),
+                'unmeasured_buses': len(unmeasured_buses),
+                'coverage_percentage': (len(measured_voltage_buses) / total_buses) * 100 if total_buses > 0 else 0,
+                'unmeasured_bus_list': list(unmeasured_buses)
+            }
+            
+            # Power coverage analysis
+            measured_power_lines = set()
+            if hasattr(self.net, 'measurement') and len(self.net.measurement) > 0:
+                power_measurements = self.net.measurement[
+                    self.net.measurement['measurement_type'].isin(['p', 'q'])
+                ]
+                measured_power_lines = set(power_measurements['element'].values)
+            
+            unmeasured_lines = set(self.net.line.index) - measured_power_lines
+            
+            report['power_coverage'] = {
+                'measured_lines': len(measured_power_lines),
+                'unmeasured_lines': len(unmeasured_lines),
+                'coverage_percentage': (len(measured_power_lines) / total_lines) * 100 if total_lines > 0 else 0,
+                'unmeasured_line_list': list(unmeasured_lines)
+            }
+            
+            # Topology analysis
+            # Identify critical buses (high degree, generator buses, load buses)
+            critical_buses = {
+                'high_degree': [],
+                'generator_buses': list(self.net.gen['bus'].values) if len(self.net.gen) > 0 else [],
+                'load_buses': list(self.net.load['bus'].values) if len(self.net.load) > 0 else [],
+                'slack_buses': list(self.net.ext_grid['bus'].values) if len(self.net.ext_grid) > 0 else []
+            }
+            
+            # Find high-degree buses
+            for bus_idx in self.net.bus.index:
+                connected_lines = len(self.net.line[
+                    (self.net.line['from_bus'] == bus_idx) | (self.net.line['to_bus'] == bus_idx)
+                ])
+                if connected_lines >= 3:
+                    critical_buses['high_degree'].append(bus_idx)
+            
+            # Check coverage of critical buses
+            critical_coverage = {}
+            for category, buses in critical_buses.items():
+                if buses:
+                    measured_critical = len(measured_voltage_buses.intersection(set(buses)))
+                    critical_coverage[category] = {
+                        'total': len(buses),
+                        'measured': measured_critical,
+                        'coverage_percentage': (measured_critical / len(buses)) * 100,
+                        'unmeasured': list(set(buses) - measured_voltage_buses)
+                    }
+            
+            report['topology_analysis'] = {
+                'critical_buses': critical_buses,
+                'critical_coverage': critical_coverage
+            }
+            
+            # Generate recommendations
+            if len(unmeasured_buses) > total_buses * 0.3:
+                report['recommendations'].append("HIGH PRIORITY: Significant voltage measurement gaps detected")
+            
+            for category, coverage in critical_coverage.items():
+                if coverage['coverage_percentage'] < 80:
+                    report['recommendations'].append(
+                        f"PRIORITY: Improve {category} voltage coverage ({coverage['coverage_percentage']:.0f}%)"
+                    )
+            
+            if len(unmeasured_lines) > total_lines * 0.5:
+                report['recommendations'].append("MEDIUM PRIORITY: Many lines lack power flow measurements")
+            
+            if report['summary']['measurement_density'] < 1.0:
+                report['recommendations'].append("CONSIDERATION: Overall measurement density is low")
+            
+            if not report['recommendations']:
+                report['recommendations'].append("GOOD: Measurement coverage appears adequate")
+            
+            return report
+            
+        except Exception as e:
+            print(f"Error generating coverage report: {e}")
+            return report
         
 def run_comparison_demo():
     """Compare noisy vs noise-free measurements"""

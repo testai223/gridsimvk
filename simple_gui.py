@@ -126,6 +126,8 @@ class PowerSystemGUI:
                   command=self.test_observability, width=25).pack(fill=tk.X, pady=2)
         ttk.Button(parent, text="Check Consistency", 
                   command=self.check_consistency, width=25).pack(fill=tk.X, pady=2)
+        ttk.Button(parent, text="Check Topology", 
+                  command=self.check_topology, width=25).pack(fill=tk.X, pady=2)
         ttk.Button(parent, text="Detect Bad Data", 
                   command=self.detect_bad_data, width=25).pack(fill=tk.X, pady=2)
         ttk.Button(parent, text="Show Results", 
@@ -175,6 +177,11 @@ class PowerSystemGUI:
         switch_frame = ttk.Frame(self.notebook)
         self.notebook.add(switch_frame, text="Switch Control")
         self.create_switch_control(switch_frame)
+        
+        # Measurement management tab
+        measurement_frame = ttk.Frame(self.notebook)
+        self.notebook.add(measurement_frame, text="Measurement Management")
+        self.create_measurement_management(measurement_frame)
         
     def create_results_table(self, parent):
         """Create table widget for displaying state estimation results"""
@@ -568,22 +575,28 @@ class PowerSystemGUI:
             self.refresh_grid_plot()
     
     def auto_refresh_results_and_plots(self):
-        """Auto-refresh results table and grid plot if enabled"""
+        """Auto-refresh results table, grid plot, and measurement display if enabled"""
         if not self.auto_refresh_var.get():
             return  # Auto-refresh disabled
         
         try:
             refreshed_items = []
             
-            # Refresh results table if we have estimation results
-            if self.estimator and self.estimator.estimation_results:
-                self.refresh_results_table()
-                refreshed_items.append("results table")
+            # Refresh results table if we have measurements or estimation results
+            if self.estimator and hasattr(self.estimator, 'net') and self.estimator.net is not None:
+                if hasattr(self.estimator.net, 'measurement') and len(self.estimator.net.measurement) > 0:
+                    self.refresh_results_table()
+                    refreshed_items.append("results table")
             
             # Refresh grid plot if we have a grid model
             if self.estimator and hasattr(self.estimator, 'net') and self.estimator.net is not None:
                 self.refresh_grid_plot()
                 refreshed_items.append("grid visualization")
+                
+                # Refresh measurement display if we have measurements
+                if hasattr(self.estimator.net, 'measurement') and len(self.estimator.net.measurement) > 0:
+                    self.refresh_measurement_display()
+                    refreshed_items.append("measurement display")
             
             if refreshed_items:
                 self.log(f"🔄 Auto-refreshed: {', '.join(refreshed_items)}")
@@ -658,6 +671,17 @@ class PowerSystemGUI:
                   command=self.close_selected_switch).pack(side=tk.LEFT, padx=2)
         ttk.Button(button_frame, text="Toggle", 
                   command=self.toggle_selected_switch).pack(side=tk.LEFT, padx=2)
+        
+        # Topology validation setting
+        topology_frame = ttk.LabelFrame(left_panel, text="Topology Validation", padding="5")
+        topology_frame.pack(fill=tk.X, pady=5)
+        
+        self.topology_check_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(topology_frame, text="Enable topology validation", 
+                       variable=self.topology_check_var).pack(anchor=tk.W, pady=2)
+        
+        ttk.Button(topology_frame, text="Check Network Topology", 
+                  command=self.check_network_topology).pack(fill=tk.X, pady=2)
         
         # Emergency operations
         emergency_frame = ttk.LabelFrame(left_panel, text="Emergency Operations", padding="5")
@@ -808,7 +832,7 @@ class PowerSystemGUI:
         self.operate_switch(switch_index)
     
     def operate_switch(self, switch_index, force_state=None):
-        """Operate a switch and update displays"""
+        """Operate a switch and update displays with topology validation"""
         if not self.estimator:
             return
         
@@ -823,12 +847,32 @@ class PowerSystemGUI:
             
             old_state = "CLOSED" if switch_data['closed'] else "OPEN"
             
-            # Perform switch operation
-            success = self.estimator.toggle_switch(switch_index, force_state)
+            # Perform switch operation with optional topology checking
+            check_topology = self.topology_check_var.get()
+            success = self.estimator.toggle_switch(switch_index, force_state, check_topology)
             
             if success:
                 new_state = "CLOSED" if force_state else ("OPEN" if force_state == False else ("OPEN" if switch_data['closed'] else "CLOSED"))
                 self.log(f"✅ {switch_data['name']}: {old_state} → {new_state}")
+                
+                # Check topology after successful operation if validation is enabled
+                if check_topology:
+                    try:
+                        validation = self.estimator.validate_switch_operation_topology(switch_index, 
+                                                                                      switch_data['closed'], 
+                                                                                      not switch_data['closed'])
+                        if validation['warnings']:
+                            for warning in validation['warnings']:
+                                self.log(f"⚠️  Topology Warning: {warning}")
+                        
+                        impact = validation.get('topology_impact', {})
+                        if impact.get('connectivity_status') == 'islanded':
+                            self.log(f"🏝️  Network now has {impact.get('total_islands', 0)} islands")
+                        elif impact.get('isolated_buses', 0) > 0:
+                            self.log(f"🔴 Warning: {impact.get('isolated_buses')} isolated buses")
+                            
+                    except Exception:
+                        pass  # Don't fail the operation if topology check has issues
                 
                 # Auto-refresh displays
                 self.refresh_switch_display()
@@ -836,10 +880,34 @@ class PowerSystemGUI:
                     self.auto_refresh_results_and_plots()
                 
             else:
-                self.log(f"❌ Failed to operate {switch_data['name']} - Power flow unstable")
+                failure_reason = "Topology validation failed" if check_topology else "Power flow unstable"
+                self.log(f"❌ Failed to operate {switch_data['name']} - {failure_reason}")
                 
         except Exception as e:
             self.log(f"❌ Switch operation error: {e}")
+    
+    def check_network_topology(self):
+        """Check network topology from switch control panel"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            self.log("🔍 Performing network topology check...")
+            results = self.estimator.check_topology_consistency(detailed_report=True)
+            
+            # Switch to switch control tab to show results
+            self.notebook.select(3)  # Switch Control is tab index 3
+            
+            # Summary in switch panel
+            if results:
+                status_icon = "✅" if results['overall_status'] == 'healthy' else "⚠️" if results['overall_status'] == 'warning' else "❌"
+                self.log(f"{status_icon} Topology Status: {results['overall_status'].upper()}")
+                self.log(f"   Connectivity: {results['connectivity_status'].upper()}")
+                self.log(f"   Islands: {len(results['network_islands'])}, Isolated: {len(results['isolated_buses'])}")
+            
+        except Exception as e:
+            self.log(f"❌ Topology check error: {e}")
     
     def open_all_switches(self):
         """Emergency operation: Open all switches"""
@@ -1023,12 +1091,1058 @@ class PowerSystemGUI:
             except Exception as e:
                 # Skip problematic switches
                 continue
+    
+    def create_measurement_management(self, parent):
+        """Create measurement management interface"""
+        # Control panel at top
+        control_panel = ttk.Frame(parent)
+        control_panel.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Title and refresh button
+        title_frame = ttk.Frame(control_panel)
+        title_frame.pack(fill=tk.X)
+        
+        ttk.Label(title_frame, text="Measurement Management", 
+                 font=("Arial", 12, "bold")).pack(side=tk.LEFT)
+        
+        ttk.Button(title_frame, text="Refresh Measurements", 
+                  command=self.refresh_measurement_display).pack(side=tk.RIGHT)
+        
+        # Create horizontal layout
+        main_frame = ttk.Frame(parent)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Left panel - Measurement controls
+        left_panel = ttk.LabelFrame(main_frame, text="Measurement Controls", padding="5")
+        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        
+        # Measurement statistics
+        stats_frame = ttk.LabelFrame(left_panel, text="Statistics", padding="5")
+        stats_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        self.measurement_stats_text = tk.Text(stats_frame, height=8, width=35, font=("Consolas", 9))
+        self.measurement_stats_text.pack()
+        
+        # Filter controls
+        filter_frame = ttk.LabelFrame(left_panel, text="Filter Options", padding="5")
+        filter_frame.pack(fill=tk.X, pady=5)
+        
+        # Filter by measurement type
+        ttk.Label(filter_frame, text="Filter by Type:").pack(anchor=tk.W)
+        self.filter_type_var = tk.StringVar(value="all")
+        type_combo = ttk.Combobox(filter_frame, textvariable=self.filter_type_var,
+                                 values=["all", "v", "p", "q"], state="readonly", width=15)
+        type_combo.pack(fill=tk.X, pady=2)
+        type_combo.bind("<<ComboboxSelected>>", self.on_measurement_filter_change)
+        
+        # Filter by element
+        ttk.Label(filter_frame, text="Filter by Element:").pack(anchor=tk.W, pady=(5, 0))
+        element_filter_frame = ttk.Frame(filter_frame)
+        element_filter_frame.pack(fill=tk.X)
+        
+        self.filter_element_var = tk.StringVar()
+        element_entry = ttk.Entry(element_filter_frame, textvariable=self.filter_element_var, width=10)
+        element_entry.pack(side=tk.LEFT)
+        element_entry.bind('<KeyRelease>', self.on_measurement_filter_change)
+        
+        ttk.Button(element_filter_frame, text="Clear", 
+                  command=self.clear_measurement_filter).pack(side=tk.RIGHT, padx=(5, 0))
+        
+        # Selection operations
+        selection_frame = ttk.LabelFrame(left_panel, text="Selection Operations", padding="5")
+        selection_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(selection_frame, text="Select All", 
+                  command=self.select_all_measurements).pack(fill=tk.X, pady=1)
+        ttk.Button(selection_frame, text="Select None", 
+                  command=self.deselect_all_measurements).pack(fill=tk.X, pady=1)
+        ttk.Button(selection_frame, text="Invert Selection", 
+                  command=self.invert_measurement_selection).pack(fill=tk.X, pady=1)
+        
+        # Removal operations
+        removal_frame = ttk.LabelFrame(left_panel, text="Removal Operations", padding="5")
+        removal_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(removal_frame, text="Remove Selected", 
+                  command=self.remove_selected_measurements).pack(fill=tk.X, pady=1)
+        ttk.Button(removal_frame, text="Remove by Type", 
+                  command=self.remove_measurements_by_type_dialog).pack(fill=tk.X, pady=1)
+        ttk.Button(removal_frame, text="Remove by Element", 
+                  command=self.remove_measurements_by_element_dialog).pack(fill=tk.X, pady=1)
+        
+        # Failure simulation
+        simulation_frame = ttk.LabelFrame(left_panel, text="Failure Simulation", padding="5")
+        simulation_frame.pack(fill=tk.X, pady=5)
+        
+        # Failure rate setting
+        failure_rate_frame = ttk.Frame(simulation_frame)
+        failure_rate_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(failure_rate_frame, text="Failure Rate:").pack(side=tk.LEFT)
+        self.failure_rate_var = tk.StringVar(value="0.1")
+        ttk.Entry(failure_rate_frame, textvariable=self.failure_rate_var, width=8).pack(side=tk.RIGHT)
+        
+        ttk.Button(simulation_frame, text="Simulate Random Failures", 
+                  command=self.simulate_random_failures).pack(fill=tk.X, pady=1)
+        ttk.Button(simulation_frame, text="Simulate Systematic Failures", 
+                  command=self.simulate_systematic_failures).pack(fill=tk.X, pady=1)
+        
+        # Backup and restore
+        backup_frame = ttk.LabelFrame(left_panel, text="Backup & Restore", padding="5")
+        backup_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(backup_frame, text="Backup Measurements", 
+                  command=self.backup_measurements).pack(fill=tk.X, pady=1)
+        ttk.Button(backup_frame, text="Restore Measurements", 
+                  command=self.restore_measurements).pack(fill=tk.X, pady=1)
+        
+        # Observability analysis
+        observability_frame = ttk.LabelFrame(left_panel, text="Observability Analysis", padding="5")
+        observability_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(observability_frame, text="Analyze Observability", 
+                  command=self.analyze_observability).pack(fill=tk.X, pady=1)
+        ttk.Button(observability_frame, text="Check Redundancy", 
+                  command=self.check_measurement_redundancy).pack(fill=tk.X, pady=1)
+        
+        # Missing measurement estimation
+        estimation_frame = ttk.LabelFrame(left_panel, text="Missing Measurement Estimation", padding="5")
+        estimation_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(estimation_frame, text="Identify Missing Measurements", 
+                  command=self.identify_missing_measurements).pack(fill=tk.X, pady=1)
+        
+        # Estimation method selection
+        method_frame = ttk.Frame(estimation_frame)
+        method_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(method_frame, text="Method:").pack(side=tk.LEFT)
+        self.estimation_method_var = tk.StringVar(value="interpolation")
+        method_combo = ttk.Combobox(method_frame, textvariable=self.estimation_method_var,
+                                   values=["interpolation", "load_flow"], state="readonly", width=12)
+        method_combo.pack(side=tk.RIGHT)
+        
+        # Noise level for estimated measurements
+        noise_frame = ttk.Frame(estimation_frame)
+        noise_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(noise_frame, text="Noise Level:").pack(side=tk.LEFT)
+        self.estimation_noise_var = tk.StringVar(value="0.02")
+        ttk.Entry(noise_frame, textvariable=self.estimation_noise_var, width=8).pack(side=tk.RIGHT)
+        
+        ttk.Button(estimation_frame, text="Estimate Missing Measurements", 
+                  command=self.estimate_missing_measurements).pack(fill=tk.X, pady=1)
+        ttk.Button(estimation_frame, text="Add Strategic Measurements", 
+                  command=self.add_strategic_measurements).pack(fill=tk.X, pady=1)
+        
+        # Pseudomeasurement management
+        pseudo_frame = ttk.LabelFrame(left_panel, text="Pseudomeasurement Management", padding="5")
+        pseudo_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(pseudo_frame, text="Identify Pseudo Locations", 
+                  command=self.identify_pseudo_locations).pack(fill=tk.X, pady=1)
+        
+        # Pseudomeasurement type selection
+        type_frame = ttk.Frame(pseudo_frame)
+        type_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(type_frame, text="Types:").pack(side=tk.LEFT)
+        
+        # Checkboxes for pseudomeasurement types
+        self.pseudo_voltage_var = tk.BooleanVar(value=True)
+        self.pseudo_zero_inj_var = tk.BooleanVar(value=True)
+        self.pseudo_slack_var = tk.BooleanVar(value=False)  # Less commonly needed
+        
+        ttk.Checkbutton(type_frame, text="Voltage", variable=self.pseudo_voltage_var).pack(side=tk.LEFT, padx=2)
+        
+        type_frame2 = ttk.Frame(pseudo_frame)
+        type_frame2.pack(fill=tk.X, pady=1)
+        ttk.Checkbutton(type_frame2, text="Zero Injection", variable=self.pseudo_zero_inj_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(type_frame2, text="Slack Reference", variable=self.pseudo_slack_var).pack(side=tk.LEFT)
+        
+        ttk.Button(pseudo_frame, text="Add Pseudomeasurements", 
+                  command=self.add_pseudomeasurements).pack(fill=tk.X, pady=1)
+        ttk.Button(pseudo_frame, text="Remove Pseudomeasurements", 
+                  command=self.remove_pseudomeasurements).pack(fill=tk.X, pady=1)
+        ttk.Button(pseudo_frame, text="Show Pseudo Summary", 
+                  command=self.show_pseudo_summary).pack(fill=tk.X, pady=1)
+        
+        # Right panel - Measurement list
+        right_panel = ttk.LabelFrame(main_frame, text="Measurements", padding="5")
+        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # Create measurement treeview
+        list_frame = ttk.Frame(right_panel)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        columns = ('Select', 'Index', 'Type', 'Element', 'Description', 'Value', 'StdDev')
+        self.measurement_tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=20)
+        
+        # Configure columns
+        column_config = {
+            'Select': ('☐', 40),
+            'Index': ('Index', 50),
+            'Type': ('Type', 50),
+            'Element': ('Element', 80),
+            'Description': ('Description', 250),
+            'Value': ('Value', 80),
+            'StdDev': ('Std Dev', 70)
+        }
+        
+        for col, (heading, width) in column_config.items():
+            self.measurement_tree.heading(col, text=heading)
+            self.measurement_tree.column(col, width=width, anchor=tk.CENTER if col in ['Select', 'Index', 'Type'] else tk.W)
+        
+        # Style the treeview
+        style = ttk.Style()
+        style.configure("Measurement.Treeview", font=("Consolas", 9))
+        self.measurement_tree.configure(style="Measurement.Treeview")
+        
+        # Add scrollbars
+        meas_v_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.measurement_tree.yview)
+        meas_h_scrollbar = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL, command=self.measurement_tree.xview)
+        self.measurement_tree.configure(yscrollcommand=meas_v_scrollbar.set, xscrollcommand=meas_h_scrollbar.set)
+        
+        # Grid layout for measurement list
+        self.measurement_tree.grid(row=0, column=0, sticky='nsew')
+        meas_v_scrollbar.grid(row=0, column=1, sticky='ns')
+        meas_h_scrollbar.grid(row=1, column=0, sticky='ew')
+        
+        list_frame.grid_rowconfigure(0, weight=1)
+        list_frame.grid_columnconfigure(0, weight=1)
+        
+        # Bind click events for selection
+        self.measurement_tree.bind('<Button-1>', self.on_measurement_click)
+        self.measurement_tree.bind('<Double-1>', self.on_measurement_double_click)
+        
+        # Status for measurement management
+        self.measurement_status_var = tk.StringVar(value="No measurements available - Generate measurements first")
+        measurement_status_label = ttk.Label(parent, textvariable=self.measurement_status_var, 
+                                           font=("Arial", 9), foreground="gray")
+        measurement_status_label.pack(pady=5)
+        
+        # Initialize displays
+        self.measurement_selection = set()  # Track selected measurements
+        self.clear_measurement_display()
+        
+    def refresh_measurement_display(self):
+        """Refresh the measurement management display"""
+        if not self.estimator or not hasattr(self.estimator, 'net') or self.estimator.net is None:
+            self.measurement_status_var.set("No grid available - Create a grid model first")
+            self.clear_measurement_display()
+            return
+        
+        if len(self.estimator.net.measurement) == 0:
+            self.measurement_status_var.set("No measurements available - Generate measurements first")
+            self.clear_measurement_display()
+            return
+        
+        try:
+            self.update_status("Updating measurement display...")
+            
+            # Get measurement information
+            measurement_info = self.estimator.get_measurement_info()
+            
+            # Update statistics
+            self.update_measurement_statistics()
+            
+            # Clear and populate measurement list
+            self.clear_measurement_list()
+            
+            # Apply filters
+            filter_type = self.filter_type_var.get()
+            filter_element = self.filter_element_var.get().strip()
+            
+            for meas_data in measurement_info:
+                # Apply type filter
+                if filter_type != "all" and meas_data['type'] != filter_type:
+                    continue
+                
+                # Apply element filter
+                if filter_element and str(filter_element) not in str(meas_data['element']):
+                    continue
+                
+                # Determine selection status
+                select_symbol = "☑" if meas_data['index'] in self.measurement_selection else "☐"
+                
+                values = (
+                    select_symbol,
+                    meas_data['index'],
+                    meas_data['type'].upper(),
+                    meas_data['element_name'],
+                    meas_data['element_description'],
+                    f"{meas_data['value']:.4f}",
+                    f"{meas_data['std_dev']:.4f}"
+                )
+                
+                # Add to treeview with measurement index as tag
+                item_id = self.measurement_tree.insert('', 'end', values=values, 
+                                                      tags=(str(meas_data['index']),))
+                
+                # Configure colors based on selection
+                if meas_data['index'] in self.measurement_selection:
+                    self.measurement_tree.item(item_id, tags=('selected',))
+            
+            # Configure selection highlighting
+            self.measurement_tree.tag_configure('selected', background='#e6f3ff')
+            
+            # Update status
+            total_measurements = len(measurement_info)
+            visible_measurements = len(self.measurement_tree.get_children())
+            selected_count = len(self.measurement_selection)
+            
+            status_msg = f"Showing {visible_measurements}/{total_measurements} measurements"
+            if selected_count > 0:
+                status_msg += f", {selected_count} selected"
+            
+            self.measurement_status_var.set(status_msg)
+            self.update_status("Measurement display updated")
+            
+        except Exception as e:
+            self.log(f"❌ Error updating measurement display: {e}")
+            self.measurement_status_var.set("Error updating measurement display")
+            self.update_status("Error")
+    
+    def clear_measurement_display(self):
+        """Clear the measurement display"""
+        self.clear_measurement_list()
+        self.measurement_selection.clear()
+        
+        # Clear statistics
+        self.measurement_stats_text.delete(1.0, tk.END)
+        self.measurement_stats_text.insert(tk.END, "No measurements available")
+    
+    def clear_measurement_list(self):
+        """Clear the measurement list"""
+        for item in self.measurement_tree.get_children():
+            self.measurement_tree.delete(item)
+    
+    def update_measurement_statistics(self):
+        """Update measurement statistics display"""
+        if not self.estimator or not hasattr(self.estimator, 'net'):
+            return
+        
+        try:
+            stats = self.estimator.get_measurement_statistics()
+            redundancy = self.estimator.check_measurement_redundancy()
+            
+            # Clear and update statistics text
+            self.measurement_stats_text.delete(1.0, tk.END)
+            
+            stats_text = f"📊 MEASUREMENT STATISTICS\n"
+            stats_text += f"═══════════════════════════\n"
+            stats_text += f"Total: {stats.get('total_measurements', 0)}\n\n"
+            
+            # By type
+            stats_text += f"By Type:\n"
+            for mtype, count in stats.get('by_type', {}).items():
+                stats_text += f"  {mtype.upper()}: {count}\n"
+            
+            # Coverage
+            coverage = stats.get('coverage', {})
+            stats_text += f"\nCoverage:\n"
+            stats_text += f"  Voltage: {coverage.get('voltage_buses', 0)}/{len(self.estimator.net.bus)} buses ({coverage.get('voltage_percentage', 0):.1f}%)\n"
+            stats_text += f"  Power: {coverage.get('power_lines', 0)}/{len(self.estimator.net.line)} lines ({coverage.get('power_percentage', 0):.1f}%)\n"
+            
+            # Redundancy
+            stats_text += f"\nRedundancy:\n"
+            stats_text += f"  Sufficient: {'✅' if redundancy.get('sufficient_measurements') else '❌'}\n"
+            stats_text += f"  Ratio: {redundancy.get('redundancy_ratio', 0):.2f}\n"
+            stats_text += f"  Critical: {len(redundancy.get('critical_measurements', []))}\n"
+            
+            self.measurement_stats_text.insert(tk.END, stats_text)
+            
+        except Exception as e:
+            self.measurement_stats_text.delete(1.0, tk.END)
+            self.measurement_stats_text.insert(tk.END, f"Error updating statistics: {e}")
+    
+    def on_measurement_click(self, event):
+        """Handle measurement list click for selection"""
+        item = self.measurement_tree.selection()[0] if self.measurement_tree.selection() else None
+        if not item:
+            return
+        
+        # Get measurement index from tags
+        tags = self.measurement_tree.item(item, 'tags')
+        if tags:
+            try:
+                meas_index = int(tags[0])
+                self.toggle_measurement_selection(meas_index)
+            except (ValueError, IndexError):
+                pass
+    
+    def on_measurement_double_click(self, event):
+        """Handle measurement list double-click for details"""
+        item = self.measurement_tree.selection()[0] if self.measurement_tree.selection() else None
+        if not item:
+            return
+        
+        values = self.measurement_tree.item(item, 'values')
+        if len(values) >= 5:
+            self.log(f"📋 Measurement Details: {values[3]} - {values[4]}")
+    
+    def toggle_measurement_selection(self, measurement_index):
+        """Toggle selection of a measurement"""
+        if measurement_index in self.measurement_selection:
+            self.measurement_selection.remove(measurement_index)
+        else:
+            self.measurement_selection.add(measurement_index)
+        
+        # Refresh display to update selection indicators
+        self.refresh_measurement_display()
+    
+    def on_measurement_filter_change(self, event=None):
+        """Handle filter changes"""
+        self.refresh_measurement_display()
+    
+    def clear_measurement_filter(self):
+        """Clear measurement filters"""
+        self.filter_type_var.set("all")
+        self.filter_element_var.set("")
+        self.refresh_measurement_display()
+    
+    def select_all_measurements(self):
+        """Select all visible measurements"""
+        if not self.estimator:
+            return
+        
+        measurement_info = self.estimator.get_measurement_info()
+        filter_type = self.filter_type_var.get()
+        filter_element = self.filter_element_var.get().strip()
+        
+        for meas_data in measurement_info:
+            # Apply same filters as display
+            if filter_type != "all" and meas_data['type'] != filter_type:
+                continue
+            if filter_element and str(filter_element) not in str(meas_data['element']):
+                continue
+            
+            self.measurement_selection.add(meas_data['index'])
+        
+        self.refresh_measurement_display()
+        self.log(f"✅ Selected {len(self.measurement_selection)} measurements")
+    
+    def deselect_all_measurements(self):
+        """Deselect all measurements"""
+        self.measurement_selection.clear()
+        self.refresh_measurement_display()
+        self.log("✅ Deselected all measurements")
+    
+    def invert_measurement_selection(self):
+        """Invert measurement selection"""
+        if not self.estimator:
+            return
+        
+        measurement_info = self.estimator.get_measurement_info()
+        all_indices = {meas['index'] for meas in measurement_info}
+        self.measurement_selection = all_indices - self.measurement_selection
+        
+        self.refresh_measurement_display()
+        self.log(f"✅ Inverted selection - {len(self.measurement_selection)} measurements selected")
+    
+    def remove_selected_measurements(self):
+        """Remove selected measurements"""
+        if not self.measurement_selection:
+            self.log("❌ No measurements selected")
+            return
+        
+        if not messagebox.askyesno("Confirm Removal", 
+                                 f"Remove {len(self.measurement_selection)} selected measurements?"):
+            return
+        
+        try:
+            success, message = self.estimator.remove_measurements(list(self.measurement_selection))
+            if success:
+                self.log(f"✅ {message}")
+                self.measurement_selection.clear()
+                self.refresh_measurement_display()
+                
+                # Auto-refresh other displays if enabled
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {message}")
+                
+        except Exception as e:
+            self.log(f"❌ Error removing measurements: {e}")
+    
+    def remove_measurements_by_type_dialog(self):
+        """Show dialog to remove measurements by type"""
+        # Simple dialog using tkinter simpledialog
+        from tkinter import simpledialog
+        
+        mtype = simpledialog.askstring("Remove by Type", 
+                                     "Enter measurement type (v, p, q):",
+                                     initialvalue="v")
+        if not mtype:
+            return
+        
+        if not messagebox.askyesno("Confirm Removal", 
+                                 f"Remove all '{mtype}' measurements?"):
+            return
+        
+        try:
+            success, message = self.estimator.remove_measurements_by_type(mtype)
+            if success:
+                self.log(f"✅ {message}")
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {message}")
+        except Exception as e:
+            self.log(f"❌ Error removing measurements: {e}")
+    
+    def remove_measurements_by_element_dialog(self):
+        """Show dialog to remove measurements by element"""
+        from tkinter import simpledialog
+        
+        element = simpledialog.askstring("Remove by Element", 
+                                       "Enter element index (bus/line number):")
+        if not element:
+            return
+        
+        try:
+            element_idx = int(element)
+        except ValueError:
+            self.log("❌ Invalid element index")
+            return
+        
+        if not messagebox.askyesno("Confirm Removal", 
+                                 f"Remove all measurements on element {element_idx}?"):
+            return
+        
+        try:
+            success, message = self.estimator.remove_measurements_by_element([element_idx])
+            if success:
+                self.log(f"✅ {message}")
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {message}")
+        except Exception as e:
+            self.log(f"❌ Error removing measurements: {e}")
+    
+    def simulate_random_failures(self):
+        """Simulate random measurement failures"""
+        try:
+            failure_rate = float(self.failure_rate_var.get())
+        except ValueError:
+            self.log("❌ Invalid failure rate")
+            return
+        
+        if not messagebox.askyesno("Simulate Failures", 
+                                 f"Simulate random failures at {failure_rate*100:.1f}% rate?"):
+            return
+        
+        try:
+            success, message = self.estimator.simulate_measurement_failures(failure_rate, ['random'])
+            if success:
+                self.log(f"✅ {message}")
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {message}")
+        except Exception as e:
+            self.log(f"❌ Error simulating failures: {e}")
+    
+    def simulate_systematic_failures(self):
+        """Simulate systematic measurement failures"""
+        try:
+            failure_rate = float(self.failure_rate_var.get())
+        except ValueError:
+            self.log("❌ Invalid failure rate")
+            return
+        
+        if not messagebox.askyesno("Simulate Failures", 
+                                 f"Simulate systematic failures at {failure_rate*100:.1f}% rate?"):
+            return
+        
+        try:
+            success, message = self.estimator.simulate_measurement_failures(failure_rate, ['systematic'])
+            if success:
+                self.log(f"✅ {message}")
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {message}")
+        except Exception as e:
+            self.log(f"❌ Error simulating failures: {e}")
+    
+    def backup_measurements(self):
+        """Create backup of current measurements"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            success = self.estimator.backup_measurements()
+            if success:
+                self.log("✅ Measurements backed up")
+            else:
+                self.log("❌ No measurements to backup")
+        except Exception as e:
+            self.log(f"❌ Error backing up measurements: {e}")
+    
+    def restore_measurements(self):
+        """Restore measurements from backup"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            success, message = self.estimator.restore_measurements()
+            if success:
+                self.log(f"✅ {message}")
+                self.measurement_selection.clear()
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {message}")
+        except Exception as e:
+            self.log(f"❌ Error restoring measurements: {e}")
+    
+    def analyze_observability(self):
+        """Analyze system observability with current measurements"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        if not hasattr(self.estimator.net, 'measurement') or len(self.estimator.net.measurement) == 0:
+            self.log("❌ No measurements available for observability analysis")
+            return
+        
+        try:
+            self.log("🔍 Analyzing system observability...")
+            
+            # Run observability analysis
+            obs_results = self.estimator.test_observability()
+            
+            if obs_results:
+                self.log("📊 OBSERVABILITY ANALYSIS RESULTS:")
+                self.log(f"   Level: {obs_results.get('level', 'Unknown')}")
+                self.log(f"   Total measurements: {obs_results.get('total_measurements', 0)}")
+                self.log(f"   Voltage measurements: {obs_results.get('voltage_measurements', 0)}")
+                self.log(f"   Power flow measurements: {obs_results.get('power_measurements', 0)}")
+                
+                # Show conditions
+                conditions = obs_results.get('conditions', [])
+                if conditions:
+                    self.log("   Conditions:")
+                    for condition in conditions:
+                        self.log(f"     {condition}")
+                
+                # Show coverage
+                coverage = obs_results.get('coverage', 0)
+                self.log(f"   Network coverage: {coverage:.1%}")
+                
+                # Provide recommendations if observability is poor
+                if 'Poor' in obs_results.get('level', '') or 'Marginal' in obs_results.get('level', ''):
+                    self.log("💡 RECOMMENDATIONS:")
+                    self.log("   • Add voltage measurements at critical buses")
+                    self.log("   • Add power flow measurements on key lines")
+                    self.log("   • Ensure measurement redundancy for reliability")
+            
+        except Exception as e:
+            self.log(f"❌ Error analyzing observability: {e}")
+    
+    def check_measurement_redundancy(self):
+        """Check measurement redundancy for reliability"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        if not hasattr(self.estimator.net, 'measurement') or len(self.estimator.net.measurement) == 0:
+            self.log("❌ No measurements available for redundancy analysis")
+            return
+        
+        try:
+            self.log("🔍 Checking measurement redundancy...")
+            
+            # Run redundancy analysis (use the existing method)
+            redundancy_info = self.estimator.check_measurement_redundancy()
+            
+            if redundancy_info:
+                self.log("📊 MEASUREMENT REDUNDANCY ANALYSIS:")
+                self.log(f"   Status: {redundancy_info.get('status', 'Unknown')}")
+                self.log(f"   Total measurements: {redundancy_info.get('total_measurements', 0)}")
+                self.log(f"   Minimum required: {redundancy_info.get('minimum_measurements', 0)}")
+                self.log(f"   Redundancy ratio: {redundancy_info.get('redundancy_ratio', 0):.2f}")
+                
+                # Show recommendations
+                recommendations = redundancy_info.get('recommendations', [])
+                if recommendations:
+                    self.log("💡 RECOMMENDATIONS:")
+                    for rec in recommendations:
+                        self.log(f"   • {rec}")
+                
+                # Check critical measurements
+                measurement_info = self.estimator.get_measurement_info()
+                voltage_count = sum(1 for m in measurement_info if m['type'] == 'v')
+                power_count = sum(1 for m in measurement_info if m['type'] in ['p', 'q'])
+                
+                self.log("📈 MEASUREMENT BREAKDOWN:")
+                self.log(f"   Voltage measurements: {voltage_count}")
+                self.log(f"   Power measurements: {power_count}")
+                
+                # Critical bus analysis
+                bus_count = len(self.estimator.net.bus)
+                if voltage_count < bus_count:
+                    missing_v = bus_count - voltage_count
+                    self.log(f"   ⚠️  Missing voltage measurements: {missing_v} buses")
+                
+                if redundancy_info.get('redundancy_ratio', 0) < 1.5:
+                    self.log("   ⚠️  Low redundancy - consider adding measurements")
+                elif redundancy_info.get('redundancy_ratio', 0) > 3.0:
+                    self.log("   ✅ High redundancy - good measurement coverage")
+                else:
+                    self.log("   ✅ Adequate redundancy level")
+            
+        except Exception as e:
+            self.log(f"❌ Error checking redundancy: {e}")
+    
+    def identify_missing_measurements(self):
+        """Identify and display missing measurements"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            self.log("🔍 Identifying missing measurements...")
+            
+            # Get missing measurement analysis
+            missing_info = self.estimator.identify_missing_measurements()
+            
+            if missing_info['total_missing'] == 0:
+                self.log("✅ No missing measurements - full coverage achieved!")
+                return
+            
+            self.log("📋 MISSING MEASUREMENT ANALYSIS:")
+            self.log(f"   Total missing: {missing_info['total_missing']}")
+            
+            # Show missing voltage measurements
+            if missing_info['missing_voltage_measurements']:
+                self.log(f"   Missing voltage measurements: {len(missing_info['missing_voltage_measurements'])}")
+                for i, missing in enumerate(missing_info['missing_voltage_measurements'][:5]):  # Show first 5
+                    self.log(f"     • {missing['description']}")
+                if len(missing_info['missing_voltage_measurements']) > 5:
+                    remaining = len(missing_info['missing_voltage_measurements']) - 5
+                    self.log(f"     ... and {remaining} more voltage measurements")
+            
+            # Show missing power measurements
+            if missing_info['missing_power_measurements']:
+                power_count = len(missing_info['missing_power_measurements'])
+                self.log(f"   Missing power measurements: {power_count}")
+                for i, missing in enumerate(missing_info['missing_power_measurements'][:5]):  # Show first 5
+                    self.log(f"     • {missing['description']}")
+                if power_count > 5:
+                    remaining = power_count - 5
+                    self.log(f"     ... and {remaining} more power measurements")
+            
+            # Show recommendations
+            if missing_info['recommendations']:
+                self.log("💡 RECOMMENDATIONS:")
+                for rec in missing_info['recommendations']:
+                    self.log(f"   • {rec}")
+            
+        except Exception as e:
+            self.log(f"❌ Error identifying missing measurements: {e}")
+    
+    def estimate_missing_measurements(self):
+        """Estimate and add missing measurements"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            method = self.estimation_method_var.get()
+            noise_level = float(self.estimation_noise_var.get())
+            
+            self.log(f"🔮 Estimating missing measurements using {method} method...")
+            self.log(f"   Noise level: {noise_level*100:.1f}%")
+            
+            # Estimate missing measurements
+            success, result = self.estimator.estimate_missing_measurements(method, noise_level)
+            
+            if success:
+                if isinstance(result, dict):
+                    self.log(f"✅ {result['summary']}")
+                    self.log(f"   Added {result['added_count']} measurements")
+                    
+                    # Show some estimation details
+                    if result.get('details'):
+                        self.log("   Sample estimations:")
+                        for detail in result['details'][:5]:
+                            self.log(f"     • {detail}")
+                    
+                    self.log(f"   Total missing identified: {result.get('total_available', 0)}")
+                else:
+                    self.log(f"✅ {result}")
+                
+                # Refresh displays
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {result}")
+                
+        except ValueError:
+            self.log("❌ Invalid noise level")
+        except Exception as e:
+            self.log(f"❌ Error estimating measurements: {e}")
+    
+    def add_strategic_measurements(self):
+        """Add strategic measurements for optimal observability"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            self.log("🎯 Adding strategic measurements for optimal observability...")
+            
+            # Add strategic measurements
+            success, result = self.estimator.add_strategic_measurements('excellent')
+            
+            if success:
+                if isinstance(result, dict):
+                    self.log(f"✅ {result['summary']}")
+                    self.log(f"   Strategy: {result['strategy']}")
+                    self.log(f"   Added {result['added_count']} measurements")
+                    
+                    # Show strategy details
+                    if result.get('details'):
+                        self.log("   Strategic additions:")
+                        for detail in result['details']:
+                            self.log(f"     • {detail}")
+                else:
+                    self.log(f"✅ {result}")
+                
+                # Check observability improvement
+                self.log("🔍 Analyzing observability improvement...")
+                obs_results = self.estimator.test_observability()
+                if obs_results:
+                    self.log(f"   New observability level: {obs_results.get('level', 'Unknown')}")
+                
+                # Refresh displays
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {result}")
+                
+        except Exception as e:
+            self.log(f"❌ Error adding strategic measurements: {e}")
+    
+    def identify_pseudo_locations(self):
+        """Identify locations where pseudomeasurements are needed"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            self.log("🔍 Identifying pseudomeasurement locations...")
+            
+            # Get pseudomeasurement analysis
+            pseudo_info = self.estimator.identify_pseudomeasurement_locations()
+            
+            if pseudo_info['total_needed'] == 0:
+                self.log("✅ No pseudomeasurements needed - system is fully observable")
+                return
+            
+            self.log("📍 PSEUDOMEASUREMENT LOCATION ANALYSIS:")
+            self.log(f"   Total locations identified: {pseudo_info['total_needed']}")
+            
+            # Show voltage pseudomeasurement locations
+            if pseudo_info['voltage_pseudomeasurements']:
+                count = len(pseudo_info['voltage_pseudomeasurements'])
+                self.log(f"   Voltage pseudomeasurements needed: {count}")
+                for i, pseudo in enumerate(pseudo_info['voltage_pseudomeasurements'][:5]):
+                    self.log(f"     • {pseudo['description']} (uncertainty: {pseudo['uncertainty']*100:.1f}%)")
+                if count > 5:
+                    self.log(f"     ... and {count - 5} more voltage locations")
+            
+            # Show zero injection locations
+            if pseudo_info['zero_injection_buses']:
+                count = len(pseudo_info['zero_injection_buses'])
+                self.log(f"   Zero injection pseudomeasurements: {count}")
+                # Group by bus
+                buses = set(p['bus_index'] for p in pseudo_info['zero_injection_buses'])
+                for bus_idx in sorted(buses)[:3]:
+                    bus_name = f"Bus {bus_idx}"
+                    self.log(f"     • Zero injection at {bus_name} (P & Q)")
+                if len(buses) > 3:
+                    self.log(f"     ... and {len(buses) - 3} more buses")
+            
+            # Show slack bus reference
+            if pseudo_info['slack_bus_pseudomeasurements']:
+                for pseudo in pseudo_info['slack_bus_pseudomeasurements']:
+                    self.log(f"   Slack reference: {pseudo['description']}")
+            
+            # Show recommendations
+            if pseudo_info['recommendations']:
+                self.log("💡 RECOMMENDATIONS:")
+                for rec in pseudo_info['recommendations']:
+                    self.log(f"   • {rec}")
+            
+        except Exception as e:
+            self.log(f"❌ Error identifying pseudomeasurement locations: {e}")
+    
+    def add_pseudomeasurements(self):
+        """Add pseudomeasurements based on selected types"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            # Determine which types to add based on checkboxes
+            types = []
+            if self.pseudo_voltage_var.get():
+                types.append('voltage')
+            if self.pseudo_zero_inj_var.get():
+                types.append('zero_injection')
+            if self.pseudo_slack_var.get():
+                types.append('slack_reference')
+            
+            if not types:
+                self.log("❌ No pseudomeasurement types selected")
+                return
+            
+            type_names = {
+                'voltage': 'Voltage',
+                'zero_injection': 'Zero Injection',
+                'slack_reference': 'Slack Reference'
+            }
+            selected_types = ', '.join(type_names[t] for t in types)
+            self.log(f"🔮 Adding pseudomeasurements: {selected_types}")
+            
+            # Add pseudomeasurements
+            success, result = self.estimator.add_pseudomeasurements(types)
+            
+            if success:
+                if isinstance(result, dict):
+                    self.log(f"✅ {result['summary']}")
+                    self.log(f"   Added {result['added_count']} pseudomeasurements")
+                    self.log(f"   Types: {', '.join(result['types'])}")
+                    
+                    # Show addition details
+                    if result.get('details'):
+                        self.log("   Added pseudomeasurements:")
+                        for detail in result['details'][:8]:  # Show first 8
+                            self.log(f"     • {detail}")
+                        if len(result['details']) > 8:
+                            remaining = len(result['details']) - 8
+                            self.log(f"     ... and {remaining} more")
+                    
+                    self.log(f"   Total identified locations: {result.get('total_identified', 0)}")
+                else:
+                    self.log(f"✅ {result}")
+                
+                # Refresh displays
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {result}")
+                
+        except Exception as e:
+            self.log(f"❌ Error adding pseudomeasurements: {e}")
+    
+    def remove_pseudomeasurements(self):
+        """Remove all pseudomeasurements"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            self.log("🗑️ Removing all pseudomeasurements...")
+            
+            success, result = self.estimator.remove_pseudomeasurements()
+            
+            if success:
+                self.log(f"✅ {result}")
+                
+                # Refresh displays
+                self.refresh_measurement_display()
+                if self.auto_refresh_var.get():
+                    self.auto_refresh_results_and_plots()
+            else:
+                self.log(f"❌ {result}")
+                
+        except Exception as e:
+            self.log(f"❌ Error removing pseudomeasurements: {e}")
+    
+    def show_pseudo_summary(self):
+        """Show summary of current pseudomeasurements"""
+        if not self.estimator:
+            self.log("❌ No grid model available")
+            return
+        
+        try:
+            self.log("📊 Analyzing current pseudomeasurements...")
+            
+            summary = self.estimator.get_pseudomeasurement_summary()
+            
+            if not summary:
+                self.log("❌ Could not get pseudomeasurement summary")
+                return
+            
+            self.log("📈 PSEUDOMEASUREMENT SUMMARY:")
+            self.log(f"   Total measurements: {summary.get('total_measurements', 0)}")
+            self.log(f"   Real measurements: {summary.get('real_measurements', 0)}")
+            self.log(f"   Pseudomeasurements: {summary.get('pseudomeasurements', 0)}")
+            
+            # Show breakdown by type
+            if summary.get('pseudo_types'):
+                self.log("   Pseudomeasurement types:")
+                for ptype, count in summary['pseudo_types'].items():
+                    self.log(f"     • {ptype}: {count}")
+            
+            # Show sample pseudomeasurements
+            if summary.get('pseudo_details'):
+                details = summary['pseudo_details']
+                self.log("   Sample pseudomeasurements:")
+                for detail in details[:5]:  # Show first 5
+                    name = detail.get('name', f"{detail['type']}_elem_{detail['element']}")
+                    value = detail.get('value', 0)
+                    self.log(f"     • {name}: {value:.4f}")
+                
+                if len(details) > 5:
+                    remaining = len(details) - 5
+                    self.log(f"     ... and {remaining} more pseudomeasurements")
+            
+            # Calculate percentage
+            total = summary.get('total_measurements', 0)
+            pseudo = summary.get('pseudomeasurements', 0)
+            if total > 0:
+                percentage = (pseudo / total) * 100
+                self.log(f"   Pseudomeasurement ratio: {percentage:.1f}%")
+                
+                if percentage > 30:
+                    self.log("   ⚠️  High pseudomeasurement ratio - consider adding real measurements")
+                elif percentage > 0:
+                    self.log("   ✅ Reasonable pseudomeasurement usage")
+                else:
+                    self.log("   ℹ️  No pseudomeasurements currently in use")
+            
+        except Exception as e:
+            self.log(f"❌ Error showing pseudomeasurement summary: {e}")
         
     def refresh_results_table(self):
-        """Refresh the results table with current state estimation data"""
-        if not self.estimator or not self.estimator.estimation_results:
-            self.table_status_var.set("No results available - Run state estimation first")
+        """Refresh the results table with current state estimation data or measurements"""
+        if not self.estimator:
+            self.table_status_var.set("No grid model available")
             self.clear_results_table()
+            return
+        
+        # Check if we have measurements to display
+        if not hasattr(self.estimator.net, 'measurement') or len(self.estimator.net.measurement) == 0:
+            self.table_status_var.set("No measurements available")
+            self.clear_results_table()
+            return
+        
+        # If no state estimation results, show just measurements
+        if not self.estimator.estimation_results:
+            self.show_measurements_only()
             return
         
         try:
@@ -1196,6 +2310,92 @@ class PowerSystemGUI:
         except Exception as e:
             self.log(f"❌ Error extracting measurement data: {e}")
             return []
+    
+    def show_measurements_only(self):
+        """Show measurements in results table without state estimation comparison"""
+        try:
+            self.update_status("Displaying measurements...")
+            self.clear_results_table()
+            
+            # Get all measurements
+            measurement_info = self.estimator.get_measurement_info()
+            
+            if not measurement_info:
+                self.table_status_var.set("No measurement data available")
+                return
+            
+            # Show measurements with load flow values (if available)
+            has_load_flow = hasattr(self.estimator.net, 'res_bus') and self.estimator.net.res_bus is not None
+            
+            for i, meas in enumerate(measurement_info):
+                mtype = meas['type']
+                element = meas['element']
+                value = meas['value']
+                std_dev = meas['std_dev']
+                
+                # Get load flow value for comparison
+                if has_load_flow:
+                    if mtype == 'v':
+                        load_flow_value = self.estimator.net.res_bus.vm_pu.iloc[element]
+                        error = ((value - load_flow_value) / load_flow_value * 100) if load_flow_value != 0 else 0
+                        unit = 'p.u.'
+                        description = f'V_mag Bus {element}'
+                    elif mtype == 'p':
+                        load_flow_value = self.estimator.net.res_line.p_from_mw.iloc[element]
+                        error = ((value - load_flow_value) / abs(load_flow_value) * 100) if load_flow_value != 0 else 0
+                        unit = 'MW'
+                        from_bus = self.estimator.net.line.from_bus.iloc[element]
+                        to_bus = self.estimator.net.line.to_bus.iloc[element]
+                        description = f'P_from L{element} ({from_bus}-{to_bus})'
+                    elif mtype == 'q':
+                        load_flow_value = self.estimator.net.res_line.q_from_mvar.iloc[element]
+                        error = ((value - load_flow_value) / abs(load_flow_value) * 100) if load_flow_value != 0 else 0
+                        unit = 'MVAr'
+                        from_bus = self.estimator.net.line.from_bus.iloc[element]
+                        to_bus = self.estimator.net.line.to_bus.iloc[element]
+                        description = f'Q_from L{element} ({from_bus}-{to_bus})'
+                    else:
+                        load_flow_value = 0
+                        error = 0
+                        unit = ''
+                        description = f'{mtype}_elem_{element}'
+                else:
+                    load_flow_value = 0
+                    error = 0
+                    unit = 'p.u.' if mtype == 'v' else ('MW' if mtype == 'p' else 'MVAr')
+                    description = meas.get('element_description', f'{mtype}_elem_{element}')
+                
+                # Create table row
+                values = (
+                    description,
+                    unit,
+                    f"{load_flow_value:.4f}" if has_load_flow else "N/A",
+                    f"{value:.4f}",
+                    "N/A",  # No estimation value yet
+                    f"{error:.2f}%" if has_load_flow else "N/A",
+                    "N/A"   # No estimation error yet
+                )
+                
+                # Add row with alternating colors
+                tags = ('even',) if i % 2 == 0 else ('odd',)
+                self.results_tree.insert('', 'end', values=values, tags=tags)
+            
+            # Configure row colors
+            self.results_tree.tag_configure('even', background='#f8f9fa', foreground='#212529')
+            self.results_tree.tag_configure('odd', background='#ffffff', foreground='#212529')
+            
+            # Update status
+            status_msg = f"Showing {len(measurement_info)} measurements"
+            if has_load_flow:
+                status_msg += " with load flow comparison"
+            else:
+                status_msg += " (run load flow for comparison)"
+            
+            self.table_status_var.set(status_msg)
+            
+        except Exception as e:
+            self.log(f"❌ Error showing measurements: {e}")
+            self.table_status_var.set("Error displaying measurements")
         
     def log(self, message):
         """Add message to output"""
@@ -1234,11 +2434,12 @@ class PowerSystemGUI:
             self.log(f"   Generators: {len(self.estimator.net.gen)}")
             self.update_grid_info()
             
-            # Auto-refresh grid plot and switch display (new grid created)
+            # Auto-refresh displays (new grid created)
             if self.auto_refresh_var.get():
                 self.refresh_grid_plot()
                 self.refresh_switch_display()
-                self.log("🔄 Auto-refreshed grid visualization and switch control")
+                self.refresh_measurement_display()
+                self.log("🔄 Auto-refreshed all displays")
                 
             self.update_status("IEEE 9-bus grid ready")
         except Exception as e:
@@ -1258,11 +2459,12 @@ class PowerSystemGUI:
             self.log(f"   Generators: {len(self.estimator.net.gen)}")
             self.update_grid_info()
             
-            # Auto-refresh grid plot and switch display (new grid created)
+            # Auto-refresh displays (new grid created)
             if self.auto_refresh_var.get():
                 self.refresh_grid_plot()
                 self.refresh_switch_display()
-                self.log("🔄 Auto-refreshed grid visualization and switch control")
+                self.refresh_measurement_display()
+                self.log("🔄 Auto-refreshed all displays")
                 
             self.update_status("ENTSO-E grid ready")
         except Exception as e:
@@ -1283,10 +2485,11 @@ class PowerSystemGUI:
             self.log(f"   Noise level: {noise_level*100:.1f}%")
             self.update_grid_info()
             
-            # Auto-refresh plots (measurements affect grid visualization)
+            # Auto-refresh plots and measurement display (new measurements generated)
             if self.auto_refresh_var.get():
                 self.refresh_grid_plot()
-                self.log("🔄 Auto-refreshed grid visualization")
+                self.refresh_measurement_display()
+                self.log("🔄 Auto-refreshed grid visualization and measurement display")
             
             self.update_status("Measurements ready")
         except ValueError:
@@ -1475,6 +2678,34 @@ class PowerSystemGUI:
             self.log(f"❌ Error showing results: {e}")
             self.update_status("Error")
     
+    def check_topology(self):
+        """Check network topology consistency"""
+        if not self.estimator:
+            messagebox.showerror("Error", "Please create a grid model first")
+            return
+            
+        self.update_status("Checking topology...")
+        try:
+            results = self.estimator.check_topology_consistency(detailed_report=True)
+            if results:
+                self.log("📊 TOPOLOGY CONSISTENCY CHECK RESULTS:")
+                self.log(f"   Overall Status: {results.get('overall_status', 'unknown').upper()}")
+                self.log(f"   Connectivity: {results.get('connectivity_status', 'unknown').upper()}")
+                self.log(f"   Network Islands: {len(results.get('network_islands', []))}")
+                self.log(f"   Isolated Buses: {len(results.get('isolated_buses', []))}")
+                self.log(f"   Switch Issues: {len(results.get('switch_issues', []))}")
+                
+                # Switch to results table if auto-refresh is enabled
+                if self.auto_refresh_var.get():
+                    self.refresh_switch_display()
+                    self.log("🔄 Auto-refreshed switch display")
+            else:
+                self.log("✅ Topology check completed")
+            self.update_status("Ready")
+        except Exception as e:
+            self.log(f"❌ Topology check error: {e}")
+            self.update_status("Error")
+    
     def show_grid_plot(self):
         """Show grid visualization and switch to that tab"""
         if not self.estimator:
@@ -1547,14 +2778,16 @@ class PowerSystemGUI:
             self.update_status("Demo failed")
     
     def clear_output(self):
-        """Clear output, results table, grid plot, and switch display"""
+        """Clear output, results table, grid plot, switch display, and measurement display"""
         self.output_text.delete(1.0, tk.END)
         self.clear_results_table()
         self.clear_grid_plot()
         self.clear_switch_display()
+        self.clear_measurement_display()
         self.table_status_var.set("Output cleared - No results available")
         self.grid_plot_status_var.set("Output cleared - No grid available")
         self.switch_status_var.set("Output cleared - No switches available")
+        self.measurement_status_var.set("Output cleared - No measurements available")
         self.update_status("Output cleared")
 
 def main():
