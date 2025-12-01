@@ -7,6 +7,7 @@ import warnings
 import logging
 from scipy import linalg
 import pandapower.plotting as plot
+import sys
 
 # Disable matplotlib debug messages
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -1463,7 +1464,7 @@ class GridStateEstimator:
         else:
             print("✅ All buses are measured (directly or through line flows)")
     
-    def detect_bad_data(self, confidence_level=0.95, max_iterations=5):
+    def detect_bad_data(self, confidence_level=0.95, max_iterations=5, prompt_restore=True):
         """
         Comprehensive bad data detection using multiple statistical tests
         
@@ -1583,7 +1584,11 @@ class GridStateEstimator:
         self.bad_data_results = bad_data_results
         
         # Option to restore original measurements
-        restore = input(f"\n🔄 Restore original measurements? (y/n, default: y): ").strip().lower()
+        restore = "y"
+        if prompt_restore and sys.stdin.isatty():
+            user_input = input(f"\n🔄 Restore original measurements? (y/n, default: y): ")
+            restore = user_input.strip().lower() or "y"
+
         if restore != 'n':
             self.net.measurement = original_measurements
             print("✅ Original measurements restored")
