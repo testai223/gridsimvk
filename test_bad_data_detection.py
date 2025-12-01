@@ -33,7 +33,7 @@ def test_basic_bad_data_detection():
     
     # Test detection on clean data (should find no bad data)
     print("\n3. Testing bad data detection on clean measurements...")
-    results = estimator.detect_bad_data(confidence_level=0.95, max_iterations=3)
+    results = estimator.detect_bad_data(confidence_level=0.95, max_iterations=3, prompt_restore=False)
     
     if results and results.get('final_status') == 'clean':
         print("✅ Correctly identified clean data (no false positives)")
@@ -71,7 +71,7 @@ def test_single_bad_measurement():
         
         # Run bad data detection
         print(f"\n2. Running bad data detection...")
-        results = estimator.detect_bad_data(confidence_level=0.95, max_iterations=5)
+        results = estimator.detect_bad_data(confidence_level=0.95, max_iterations=5, prompt_restore=False)
         
         if results and results.get('bad_measurements'):
             detected_bad = results['bad_measurements']
@@ -107,7 +107,7 @@ def test_multiple_bad_measurements():
     
     if bad_measurements:
         print(f"\n2. Running bad data detection on {len(bad_measurements)} corrupted measurements...")
-        results = estimator.detect_bad_data(confidence_level=0.95, max_iterations=10)
+        results = estimator.detect_bad_data(confidence_level=0.95, max_iterations=10, prompt_restore=False)
         
         if results and results.get('bad_measurements'):
             detected_count = len(results['bad_measurements'])
@@ -141,7 +141,7 @@ def test_systematic_bias_detection():
     
     if bad_measurements:
         print(f"\n2. Running bad data detection on systematic bias...")
-        results = estimator.detect_bad_data(confidence_level=0.95, max_iterations=8)
+        results = estimator.detect_bad_data(confidence_level=0.95, max_iterations=8, prompt_restore=False)
         
         if results:
             final_status = results.get('final_status')
@@ -190,8 +190,9 @@ def test_detection_performance():
                 
                 # Run detection
                 results = estimator.detect_bad_data(
-                    confidence_level=confidence, 
-                    max_iterations=5
+                    confidence_level=confidence,
+                    max_iterations=5,
+                    prompt_restore=False,
                 )
                 
                 if results:

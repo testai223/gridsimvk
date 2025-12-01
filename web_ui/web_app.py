@@ -1,11 +1,19 @@
 import base64
 import io
 import math
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 from flask import Flask, flash, redirect, render_template, request, url_for
 import matplotlib
+
+# Ensure the repository root (where grid_state_estimator.py lives) is importable when
+# the app is run from inside the web_ui directory or via FLASK_APP=web_ui.web_app.
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 # Use non-GUI backend for server-side rendering
 matplotlib.use("Agg")
@@ -315,14 +323,7 @@ def get_measurement_comparison_data():
         return []
 
     net = state.estimator.net
-    if (
-        not hasattr(net, "measurement")
-        or len(net.measurement) == 0
-        or not hasattr(net, "res_bus_est")
-        or net.res_bus_est is None
-        or not hasattr(net, "res_bus")
-        or net.res_bus is None
-    ):
+    if not hasattr(net, "measurement") or len(net.measurement) == 0:
         return []
 
     comparison = []
