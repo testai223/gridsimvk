@@ -1,0 +1,909 @@
+{% extends "base.html" %}
+{% block content %}
+
+<style>
+  /* Substation-specific styling */
+  .substation-container {
+    background: linear-gradient(135deg, #f8fafc, #e2e8f0);
+    border: 2px solid #cbd5e1;
+    border-radius: 15px;
+    padding: 20px;
+    margin: 10px 0;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+  }
+  
+  .voltage-level-section {
+    background: rgba(255,255,255,0.8);
+    border: 1px solid #d1d5db;
+    border-radius: 10px;
+    margin: 8px 0;
+    padding: 15px;
+  }
+  
+  .substation-legend {
+    background: rgba(255,255,255,0.95);
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 15px;
+    margin: 10px 0;
+  }
+  
+  .diagram-controls {
+    position: sticky;
+    top: 10px;
+    z-index: 1000;
+    background: rgba(255,255,255,0.95);
+    backdrop-filter: blur(10px);
+    border-radius: 10px;
+    padding: 15px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+  }
+  
+  /* Enhanced SVG styling for substations */
+  .substation-boundary {
+    stroke: #374151;
+    stroke-width: 3;
+    fill: rgba(59, 130, 246, 0.1);
+    stroke-dasharray: 8,4;
+  }
+  
+  .voltage-level-group {
+    stroke: #6b7280;
+    stroke-width: 2;
+    fill: rgba(34, 197, 94, 0.05);
+  }
+  
+  .busbar {
+    stroke: #1f2937;
+    stroke-width: 4;
+  }
+  
+  .transformer-symbol {
+    stroke: #dc2626;
+    stroke-width: 2;
+    fill: #fef2f2;
+  }
+  
+  /* Interactive element enhancements */
+  .clickable-element {
+    cursor: pointer;
+    transition: all 0.3s ease;
+  }
+  
+  .clickable-element:hover {
+    filter: brightness(1.2) drop-shadow(0 4px 8px rgba(0,0,0,0.3));
+    transform: scale(1.05);
+  }
+  
+  .element-selected {
+    filter: brightness(1.3) drop-shadow(0 6px 12px rgba(59, 130, 246, 0.5));
+    stroke: #3b82f6;
+    stroke-width: 3;
+  }
+  
+  /* Status indicators */
+  .status-online { 
+    fill: #10b981; 
+    stroke: #059669; 
+  }
+  
+  .status-offline { 
+    fill: #6b7280; 
+    stroke: #4b5563; 
+    opacity: 0.6;
+  }
+  
+  .status-fault { 
+    fill: #ef4444; 
+    stroke: #dc2626; 
+    animation: pulse 1.5s infinite;
+  }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+  
+  /* Information panels */
+  .info-panel {
+    background: linear-gradient(135deg, #fff, #f8fafc);
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 20px;
+    margin: 10px 0;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+  }
+  
+  .substation-info {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 15px;
+  }
+</style>
+
+<div class="container-fluid">
+  <!-- Page Header -->
+  <div class="row mb-4">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header bg-gradient" style="background: linear-gradient(135deg, #1e40af, #3730a3);">
+          <h2 class="text-white mb-0">🏭 Advanced Substation Visualization</h2>
+          <p class="text-white mb-0 opacity-75">Interactive power system substation representation with real-time control</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <!-- Control Panel -->
+    <div class="col-lg-3">
+      <div class="diagram-controls">
+        <h5 class="mb-3">📋 System Controls</h5>
+        
+        <!-- Grid Creation -->
+        <div class="mb-3">
+          <h6>Grid Type</h6>
+          <div class="btn-group w-100" role="group">
+            <button class="btn btn-outline-primary btn-sm" onclick="createGrid('ieee9')">IEEE 9-Bus</button>
+            <button class="btn btn-outline-primary btn-sm" onclick="createGrid('entsoe')">ENTSO-E</button>
+          </div>
+        </div>
+        
+        <!-- Measurement Controls -->
+        <div class="mb-3">
+          <h6>Measurements</h6>
+          <div class="input-group mb-2">
+            <input type="number" id="noiseLevel" class="form-control form-control-sm" 
+                   value="0.02" step="0.01" min="0" max="0.1">
+            <button class="btn btn-success btn-sm" onclick="generateMeasurements()">Generate</button>
+          </div>
+          <button class="btn btn-primary btn-sm w-100" onclick="runStateEstimation()">State Estimation</button>
+        </div>
+        
+        <!-- View Controls -->
+        <div class="mb-3">
+          <h6>Display Options</h6>
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="showVoltages" checked onchange="toggleVoltageDisplay()">
+            <label class="form-check-label" for="showVoltages">Voltage Values</label>
+          </div>
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="showPowerFlows" checked onchange="togglePowerFlowDisplay()">
+            <label class="form-check-label" for="showPowerFlows">Power Flows</label>
+          </div>
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="showSubstationBounds" checked onchange="toggleSubstationBounds()">
+            <label class="form-check-label" for="showSubstationBounds">Substation Boundaries</label>
+          </div>
+        </div>
+        
+        <!-- Zoom Controls -->
+        <div class="mb-3">
+          <h6>Navigation</h6>
+          <div class="btn-group w-100">
+            <button class="btn btn-outline-secondary btn-sm" onclick="zoomIn()">🔍+</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="resetZoom()">Reset</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="zoomOut()">🔍-</button>
+          </div>
+        </div>
+        
+        <!-- Refresh -->
+        <button class="btn btn-info btn-sm w-100" onclick="refreshDiagram()">🔄 Refresh</button>
+      </div>
+      
+      <!-- System Status -->
+      <div class="info-panel mt-3">
+        <h6>📊 System Status</h6>
+        <div id="systemStatus">
+          <p class="text-muted mb-1">No grid loaded</p>
+        </div>
+      </div>
+      
+      <!-- Legend -->
+      <div class="substation-legend">
+        <h6>🗺️ Legend</h6>
+        <div class="row g-2">
+          <div class="col-12">
+            <small>
+              <span class="badge bg-primary">■</span> Substation Boundary<br>
+              <span class="badge bg-success">●</span> Bus (Online)<br>
+              <span class="badge bg-secondary">●</span> Bus (Offline)<br>
+              <span class="badge bg-warning">▲</span> Generator<br>
+              <span class="badge bg-info">▼</span> Load<br>
+              <span class="badge bg-danger">◆</span> Transformer<br>
+              <span class="badge bg-dark">—</span> Transmission Line
+            </small>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Main Diagram Area -->
+    <div class="col-lg-9">
+      <div class="substation-container">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h5 class="mb-0">🌐 Interactive Substation Diagram</h5>
+          <div class="btn-group">
+            <button class="btn btn-sm btn-outline-info" onclick="exportDiagram()">💾 Export</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="printDiagram()">🖨️ Print</button>
+          </div>
+        </div>
+        
+        <!-- SVG Container -->
+        <div id="diagramContainer" class="border rounded" style="background: #fafbfc; min-height: 600px;">
+          <svg id="substationSvg" width="100%" height="600" viewBox="0 0 1200 600">
+            <defs>
+              <!-- Enhanced gradients and patterns -->
+              <linearGradient id="substationGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#e0f2fe;stop-opacity:0.8" />
+                <stop offset="100%" style="stop-color:#b3e5fc;stop-opacity:0.3" />
+              </linearGradient>
+              
+              <linearGradient id="busOnlineGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#10b981;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#059669;stop-opacity:1" />
+              </linearGradient>
+              
+              <linearGradient id="transformerGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#dc2626;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#991b1b;stop-opacity:1" />
+              </linearGradient>
+              
+              <!-- Arrow markers for power flow -->
+              <marker id="powerFlowArrow" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+                <polygon points="0 0, 12 4, 0 8" fill="#374151" />
+              </marker>
+              
+              <!-- Patterns for different voltage levels -->
+              <pattern id="voltage400Pattern" patternUnits="userSpaceOnUse" width="4" height="4">
+                <rect width="4" height="4" fill="#ef4444"/>
+                <rect width="2" height="2" fill="#dc2626"/>
+              </pattern>
+              
+              <pattern id="voltage220Pattern" patternUnits="userSpaceOnUse" width="4" height="4">
+                <rect width="4" height="4" fill="#f59e0b"/>
+                <rect width="2" height="2" fill="#d97706"/>
+              </pattern>
+              
+              <pattern id="voltage138Pattern" patternUnits="userSpaceOnUse" width="4" height="4">
+                <rect width="4" height="4" fill="#3b82f6"/>
+                <rect width="2" height="2" fill="#2563eb"/>
+              </pattern>
+            </defs>
+            
+            <!-- Loading message -->
+            <text x="600" y="300" text-anchor="middle" class="h4" fill="#6b7280">
+              🏗️ Create a grid system to view substation diagram
+            </text>
+            
+            <text x="600" y="330" text-anchor="middle" class="text-muted" fill="#9ca3af">
+              Use the controls on the left to start
+            </text>
+          </svg>
+        </div>
+        
+        <!-- Element Information Panel -->
+        <div id="elementInfoPanel" class="info-panel mt-3" style="display: none;">
+          <h6>📋 Element Details</h6>
+          <div id="elementDetails" class="substation-info">
+            <!-- Element details will be populated here -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Global variables for diagram state
+let currentGridData = null;
+let selectedElement = null;
+let zoomLevel = 1;
+let panX = 0;
+let panY = 0;
+let showVoltages = true;
+let showPowerFlows = true;
+let showSubstationBounds = true;
+
+// Substation definitions based on grid type
+const substationDefinitions = {
+  ieee9: [
+    { id: 'sub1', name: 'Generation Station A', buses: [0, 1, 2], voltage: '138kV', type: 'generation', x: 200, y: 150 },
+    { id: 'sub2', name: 'Transmission Hub', buses: [3, 4, 5], voltage: '138kV', type: 'transmission', x: 600, y: 250 },
+    { id: 'sub3', name: 'Distribution Center', buses: [6, 7, 8], voltage: '138kV', type: 'distribution', x: 1000, y: 350 }
+  ],
+  entsoe: [
+    { id: 'sub1', name: 'Northern 400kV Station', buses: [0], voltage: '400kV', type: 'transmission', x: 200, y: 100 },
+    { id: 'sub2', name: 'Central Hub 400/220kV', buses: [1, 3, 4], voltage: 'Mixed', type: 'interconnection', x: 600, y: 200 },
+    { id: 'sub3', name: 'Southern 400kV Station', buses: [2], voltage: '400kV', type: 'transmission', x: 1000, y: 100 },
+    { id: 'sub4', name: '220kV Distribution', buses: [3, 4], voltage: '220kV', type: 'distribution', x: 400, y: 400 }
+  ]
+};
+
+// Initialize diagram when page loads
+document.addEventListener('DOMContentLoaded', function() {
+  setupEventListeners();
+  updateSystemStatus('No grid loaded', 'secondary');
+});
+
+function setupEventListeners() {
+  // SVG pan and zoom
+  const svg = document.getElementById('substationSvg');
+  svg.addEventListener('wheel', handleZoom);
+  svg.addEventListener('mousedown', startPan);
+  svg.addEventListener('mousemove', updatePan);
+  svg.addEventListener('mouseup', endPan);
+  
+  // Keyboard shortcuts
+  document.addEventListener('keydown', handleKeyboard);
+}
+
+async function createGrid(gridType) {
+  try {
+    updateSystemStatus('Creating grid...', 'warning');
+    
+    const response = await fetch('/create-grid', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grid_type=${gridType}`
+    });
+    
+    if (response.ok) {
+      updateSystemStatus(`${gridType.toUpperCase()} grid created`, 'success');
+      await refreshDiagram();
+    } else {
+      throw new Error('Grid creation failed');
+    }
+  } catch (error) {
+    console.error('Grid creation error:', error);
+    updateSystemStatus('Grid creation failed', 'danger');
+  }
+}
+
+async function generateMeasurements() {
+  try {
+    const noiseLevel = document.getElementById('noiseLevel').value;
+    updateSystemStatus('Generating measurements...', 'warning');
+    
+    const response = await fetch('/simulate-measurements', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `noise=${noiseLevel}`
+    });
+    
+    if (response.ok) {
+      updateSystemStatus('Measurements generated', 'success');
+      await refreshDiagram();
+    } else {
+      throw new Error('Measurement generation failed');
+    }
+  } catch (error) {
+    console.error('Measurement generation error:', error);
+    updateSystemStatus('Measurement generation failed', 'danger');
+  }
+}
+
+async function runStateEstimation() {
+  try {
+    updateSystemStatus('Running state estimation...', 'warning');
+    
+    const response = await fetch('/state-estimation', {
+      method: 'POST'
+    });
+    
+    if (response.ok) {
+      updateSystemStatus('State estimation completed', 'success');
+      await refreshDiagram();
+    } else {
+      throw new Error('State estimation failed');
+    }
+  } catch (error) {
+    console.error('State estimation error:', error);
+    updateSystemStatus('State estimation failed', 'danger');
+  }
+}
+
+async function refreshDiagram() {
+  try {
+    const response = await fetch('/api/grid-diagram');
+    const data = await response.json();
+    
+    if (data.error) {
+      console.error('Grid diagram error:', data.error);
+      return;
+    }
+    
+    currentGridData = data;
+    renderSubstationDiagram(data);
+    updateSystemStatus(`Grid loaded: ${data.grid_type}`, 'info');
+    
+  } catch (error) {
+    console.error('Diagram refresh error:', error);
+    updateSystemStatus('Diagram refresh failed', 'danger');
+  }
+}
+
+function renderSubstationDiagram(gridData) {
+  const svg = document.getElementById('substationSvg');
+  svg.innerHTML = svg.querySelector('defs').outerHTML; // Keep defs, clear content
+  
+  // Determine grid type and get substation definitions
+  const gridType = gridData.grid_type === 'IEEE 9-bus' ? 'ieee9' : 'entsoe';
+  const substations = substationDefinitions[gridType] || [];
+  
+  // Render substations
+  substations.forEach(substation => {
+    renderSubstation(svg, substation, gridData);
+  });
+  
+  // Render transmission lines between substations
+  renderInterSubstationLines(svg, gridData, substations);
+  
+  // Update display based on current settings
+  updateDisplayOptions();
+}
+
+function renderSubstation(svg, substation, gridData) {
+  const substationGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  substationGroup.setAttribute('class', 'substation-group');
+  substationGroup.setAttribute('data-substation-id', substation.id);
+  
+  // Substation boundary
+  if (showSubstationBounds) {
+    const boundary = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    boundary.setAttribute('x', substation.x - 80);
+    boundary.setAttribute('y', substation.y - 60);
+    boundary.setAttribute('width', 160);
+    boundary.setAttribute('height', 120);
+    boundary.setAttribute('class', 'substation-boundary');
+    boundary.setAttribute('rx', 10);
+    substationGroup.appendChild(boundary);
+  }
+  
+  // Substation label
+  const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  label.setAttribute('x', substation.x);
+  label.setAttribute('y', substation.y - 70);
+  label.setAttribute('text-anchor', 'middle');
+  label.setAttribute('font-size', '12');
+  label.setAttribute('font-weight', 'bold');
+  label.setAttribute('fill', '#374151');
+  label.textContent = substation.name;
+  substationGroup.appendChild(label);
+  
+  // Voltage level label
+  const voltageLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  voltageLabel.setAttribute('x', substation.x);
+  voltageLabel.setAttribute('y', substation.y - 55);
+  voltageLabel.setAttribute('text-anchor', 'middle');
+  voltageLabel.setAttribute('font-size', '10');
+  voltageLabel.setAttribute('fill', '#6b7280');
+  voltageLabel.textContent = substation.voltage;
+  substationGroup.appendChild(voltageLabel);
+  
+  // Render buses within substation
+  substation.buses.forEach((busIndex, i) => {
+    const bus = gridData.buses.find(b => b.index === busIndex);
+    if (bus) {
+      const busX = substation.x + (i - 1) * 40;
+      const busY = substation.y;
+      
+      renderBusInSubstation(substationGroup, bus, busX, busY);
+    }
+  });
+  
+  // Add substation type icon
+  const typeIcon = getSubstationTypeIcon(substation.type);
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  icon.setAttribute('x', substation.x + 60);
+  icon.setAttribute('y', substation.y - 40);
+  icon.setAttribute('font-size', '20');
+  icon.textContent = typeIcon;
+  substationGroup.appendChild(icon);
+  
+  svg.appendChild(substationGroup);
+}
+
+function renderBusInSubstation(parent, bus, x, y) {
+  const busGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  busGroup.setAttribute('class', 'bus-group clickable-element');
+  busGroup.setAttribute('data-element-type', 'bus');
+  busGroup.setAttribute('data-element-index', bus.index);
+  
+  // Bus circle
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', x);
+  circle.setAttribute('cy', y);
+  circle.setAttribute('r', 15);
+  circle.setAttribute('fill', 'url(#busOnlineGradient)');
+  circle.setAttribute('stroke', getVoltageColor(bus.voltage_pu));
+  circle.setAttribute('stroke-width', 2);
+  busGroup.appendChild(circle);
+  
+  // Bus number
+  const busNumber = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  busNumber.setAttribute('x', x);
+  busNumber.setAttribute('y', y + 4);
+  busNumber.setAttribute('text-anchor', 'middle');
+  busNumber.setAttribute('font-size', '10');
+  busNumber.setAttribute('font-weight', 'bold');
+  busNumber.setAttribute('fill', 'white');
+  busNumber.setAttribute('pointer-events', 'none');
+  busNumber.textContent = bus.index;
+  busGroup.appendChild(busNumber);
+  
+  // Voltage display
+  if (showVoltages) {
+    const voltageText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    voltageText.setAttribute('x', x);
+    voltageText.setAttribute('y', y + 25);
+    voltageText.setAttribute('text-anchor', 'middle');
+    voltageText.setAttribute('font-size', '9');
+    voltageText.setAttribute('fill', '#374151');
+    voltageText.textContent = `${bus.voltage_pu.toFixed(3)} p.u.`;
+    busGroup.appendChild(voltageText);
+  }
+  
+  // Add click handler
+  busGroup.addEventListener('click', () => handleElementClick('bus', bus.index, bus));
+  busGroup.addEventListener('mouseover', () => showTooltip(busGroup, `Bus ${bus.index}`, `${bus.voltage_pu.toFixed(3)} p.u.`));
+  busGroup.addEventListener('mouseout', hideTooltip);
+  
+  parent.appendChild(busGroup);
+}
+
+function renderInterSubstationLines(svg, gridData, substations) {
+  gridData.lines.forEach(line => {
+    const fromSubstation = findSubstationForBus(line.from_bus, substations);
+    const toSubstation = findSubstationForBus(line.to_bus, substations);
+    
+    if (fromSubstation && toSubstation && fromSubstation.id !== toSubstation.id) {
+      renderTransmissionLine(svg, line, fromSubstation, toSubstation);
+    }
+  });
+}
+
+function renderTransmissionLine(svg, line, fromSubstation, toSubstation) {
+  const lineGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  lineGroup.setAttribute('class', 'transmission-line clickable-element');
+  lineGroup.setAttribute('data-element-type', 'line');
+  lineGroup.setAttribute('data-element-index', line.index);
+  
+  // Calculate connection points
+  const fromX = fromSubstation.x + 80;
+  const fromY = fromSubstation.y;
+  const toX = toSubstation.x - 80;
+  const toY = toSubstation.y;
+  
+  // Main transmission line
+  const mainLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  mainLine.setAttribute('x1', fromX);
+  mainLine.setAttribute('y1', fromY);
+  mainLine.setAttribute('x2', toX);
+  mainLine.setAttribute('y2', toY);
+  mainLine.setAttribute('stroke', line.in_service ? '#1f2937' : '#9ca3af');
+  mainLine.setAttribute('stroke-width', line.in_service ? 4 : 2);
+  mainLine.setAttribute('stroke-dasharray', line.in_service ? 'none' : '8,4');
+  lineGroup.appendChild(mainLine);
+  
+  // Power flow arrow
+  if (showPowerFlows && line.p_from_mw && line.in_service) {
+    const midX = (fromX + toX) / 2;
+    const midY = (fromY + toY) / 2;
+    
+    const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    const arrowSize = 8;
+    const angle = Math.atan2(toY - fromY, toX - fromX);
+    
+    const points = [
+      [midX - arrowSize * Math.cos(angle - 0.5), midY - arrowSize * Math.sin(angle - 0.5)],
+      [midX, midY],
+      [midX - arrowSize * Math.cos(angle + 0.5), midY - arrowSize * Math.sin(angle + 0.5)]
+    ];
+    
+    arrow.setAttribute('points', points.map(p => p.join(',')).join(' '));
+    arrow.setAttribute('fill', getPowerFlowColor(line.p_from_mw));
+    lineGroup.appendChild(arrow);
+    
+    // Power flow label
+    const powerLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    powerLabel.setAttribute('x', midX);
+    powerLabel.setAttribute('y', midY - 15);
+    powerLabel.setAttribute('text-anchor', 'middle');
+    powerLabel.setAttribute('font-size', '9');
+    powerLabel.setAttribute('fill', '#374151');
+    powerLabel.setAttribute('background', 'white');
+    powerLabel.textContent = `${Math.abs(line.p_from_mw).toFixed(1)} MW`;
+    lineGroup.appendChild(powerLabel);
+  }
+  
+  // Line label
+  const lineLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  lineLabel.setAttribute('x', (fromX + toX) / 2);
+  lineLabel.setAttribute('y', (fromY + toY) / 2 + 20);
+  lineLabel.setAttribute('text-anchor', 'middle');
+  lineLabel.setAttribute('font-size', '8');
+  lineLabel.setAttribute('fill', '#6b7280');
+  lineLabel.textContent = `L${line.index}`;
+  lineGroup.appendChild(lineLabel);
+  
+  // Add click handler
+  lineGroup.addEventListener('click', () => handleElementClick('line', line.index, line));
+  lineGroup.addEventListener('mouseover', () => showTooltip(lineGroup, `Line ${line.index}`, line.in_service ? 'In Service' : 'Out of Service'));
+  lineGroup.addEventListener('mouseout', hideTooltip);
+  
+  svg.appendChild(lineGroup);
+}
+
+function findSubstationForBus(busIndex, substations) {
+  return substations.find(sub => sub.buses.includes(busIndex));
+}
+
+function getSubstationTypeIcon(type) {
+  const icons = {
+    generation: '⚡',
+    transmission: '🔌',
+    distribution: '🏢',
+    interconnection: '🔄'
+  };
+  return icons[type] || '🏭';
+}
+
+function getVoltageColor(voltage) {
+  if (voltage < 0.95) return '#ef4444';      // Low voltage - red
+  if (voltage > 1.05) return '#f59e0b';      // High voltage - orange  
+  return '#10b981';                          // Normal voltage - green
+}
+
+function getPowerFlowColor(power) {
+  const absPower = Math.abs(power);
+  if (absPower > 100) return '#dc2626';      // High power - red
+  if (absPower > 50) return '#f59e0b';       // Medium power - orange
+  return '#10b981';                          // Low power - green
+}
+
+function handleElementClick(elementType, elementIndex, elementData) {
+  selectedElement = {type: elementType, index: elementIndex, data: elementData};
+  
+  if (elementType === 'bus') {
+    showElementDetails(elementData);
+  } else if (elementType === 'line') {
+    toggleLineStatus(elementIndex);
+  }
+}
+
+async function toggleLineStatus(lineIndex) {
+  try {
+    const response = await fetch('/api/element-toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        element_type: 'line',
+        element_index: lineIndex
+      })
+    });
+    
+    const result = await response.json();
+    if (result.success) {
+      showNotification(result.message, 'success');
+      await refreshDiagram();
+    } else {
+      showNotification(result.message, 'error');
+    }
+  } catch (error) {
+    console.error('Line toggle error:', error);
+    showNotification('Line operation failed', 'error');
+  }
+}
+
+function showElementDetails(elementData) {
+  const panel = document.getElementById('elementInfoPanel');
+  const details = document.getElementById('elementDetails');
+  
+  details.innerHTML = `
+    <div class="col-md-6">
+      <strong>Element:</strong> ${elementData.name}<br>
+      <strong>Type:</strong> Bus<br>
+      <strong>Index:</strong> ${elementData.index}
+    </div>
+    <div class="col-md-6">
+      <strong>Voltage:</strong> ${elementData.voltage_pu.toFixed(4)} p.u.<br>
+      ${elementData.estimated_voltage_pu ? `<strong>Estimated:</strong> ${elementData.estimated_voltage_pu.toFixed(4)} p.u.<br>` : ''}
+      <strong>Status:</strong> <span class="badge bg-success">Online</span>
+    </div>
+  `;
+  
+  panel.style.display = 'block';
+  
+  setTimeout(() => {
+    panel.style.display = 'none';
+  }, 5000);
+}
+
+function showTooltip(element, title, info) {
+  const tooltip = document.createElement('div');
+  tooltip.id = 'element-tooltip';
+  tooltip.className = 'position-absolute bg-dark text-white p-2 rounded';
+  tooltip.style.cssText = 'z-index: 1000; font-size: 12px; pointer-events: none;';
+  tooltip.innerHTML = `<strong>${title}</strong><br>${info}`;
+  
+  document.body.appendChild(tooltip);
+  
+  element.addEventListener('mousemove', (e) => {
+    tooltip.style.left = e.pageX + 10 + 'px';
+    tooltip.style.top = e.pageY - 30 + 'px';
+  });
+}
+
+function hideTooltip() {
+  const tooltip = document.getElementById('element-tooltip');
+  if (tooltip) {
+    tooltip.remove();
+  }
+}
+
+function showNotification(message, type = 'info') {
+  const alertClass = type === 'success' ? 'alert-success' : type === 'error' ? 'alert-danger' : 'alert-info';
+  const notification = document.createElement('div');
+  notification.className = `alert ${alertClass} position-fixed notification`;
+  notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+  notification.innerHTML = `
+    ${message}
+    <button type="button" class="btn-close" onclick="this.parentElement.remove()"></button>
+  `;
+  
+  document.body.appendChild(notification);
+  
+  setTimeout(() => {
+    if (notification.parentElement) {
+      notification.remove();
+    }
+  }, 4000);
+}
+
+function updateSystemStatus(message, type) {
+  const statusDiv = document.getElementById('systemStatus');
+  const badgeClass = `bg-${type}`;
+  statusDiv.innerHTML = `<span class="badge ${badgeClass}">${message}</span>`;
+}
+
+// Display control functions
+function toggleVoltageDisplay() {
+  showVoltages = document.getElementById('showVoltages').checked;
+  if (currentGridData) renderSubstationDiagram(currentGridData);
+}
+
+function togglePowerFlowDisplay() {
+  showPowerFlows = document.getElementById('showPowerFlows').checked;
+  if (currentGridData) renderSubstationDiagram(currentGridData);
+}
+
+function toggleSubstationBounds() {
+  showSubstationBounds = document.getElementById('showSubstationBounds').checked;
+  if (currentGridData) renderSubstationDiagram(currentGridData);
+}
+
+function updateDisplayOptions() {
+  document.getElementById('showVoltages').checked = showVoltages;
+  document.getElementById('showPowerFlows').checked = showPowerFlows;
+  document.getElementById('showSubstationBounds').checked = showSubstationBounds;
+}
+
+// Zoom and pan functions
+function zoomIn() {
+  zoomLevel = Math.min(zoomLevel * 1.2, 3);
+  updateTransform();
+}
+
+function zoomOut() {
+  zoomLevel = Math.max(zoomLevel / 1.2, 0.5);
+  updateTransform();
+}
+
+function resetZoom() {
+  zoomLevel = 1;
+  panX = 0;
+  panY = 0;
+  updateTransform();
+}
+
+function updateTransform() {
+  const svg = document.getElementById('substationSvg');
+  svg.style.transform = `scale(${zoomLevel}) translate(${panX}px, ${panY}px)`;
+}
+
+function handleZoom(e) {
+  e.preventDefault();
+  if (e.deltaY > 0) {
+    zoomOut();
+  } else {
+    zoomIn();
+  }
+}
+
+let isPanning = false;
+let lastPanX = 0;
+let lastPanY = 0;
+
+function startPan(e) {
+  isPanning = true;
+  lastPanX = e.clientX;
+  lastPanY = e.clientY;
+}
+
+function updatePan(e) {
+  if (!isPanning) return;
+  
+  const deltaX = e.clientX - lastPanX;
+  const deltaY = e.clientY - lastPanY;
+  
+  panX += deltaX / zoomLevel;
+  panY += deltaY / zoomLevel;
+  
+  lastPanX = e.clientX;
+  lastPanY = e.clientY;
+  
+  updateTransform();
+}
+
+function endPan() {
+  isPanning = false;
+}
+
+function handleKeyboard(e) {
+  if (e.target.tagName === 'INPUT') return;
+  
+  switch(e.key) {
+    case '=':
+    case '+':
+      zoomIn();
+      break;
+    case '-':
+      zoomOut();
+      break;
+    case '0':
+      resetZoom();
+      break;
+    case 'r':
+      refreshDiagram();
+      break;
+  }
+}
+
+// Export and print functions
+function exportDiagram() {
+  const svg = document.getElementById('substationSvg');
+  const serializer = new XMLSerializer();
+  const svgString = serializer.serializeToString(svg);
+  
+  const blob = new Blob([svgString], {type: 'image/svg+xml'});
+  const url = URL.createObjectURL(blob);
+  
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'substation_diagram.svg';
+  a.click();
+  
+  URL.revokeObjectURL(url);
+  showNotification('Diagram exported successfully', 'success');
+}
+
+function printDiagram() {
+  const svg = document.getElementById('substationSvg');
+  const svgString = new XMLSerializer().serializeToString(svg);
+  
+  const printWindow = window.open('', '_blank');
+  printWindow.document.write(`
+    <html>
+      <head><title>Substation Diagram</title></head>
+      <body style="margin: 0; padding: 20px;">
+        ${svgString}
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.print();
+}
+</script>
+
+{% endblock %}

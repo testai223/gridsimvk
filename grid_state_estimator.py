@@ -353,20 +353,293 @@ class GridStateEstimator:
             return []
         
         switch_info = []
-        for idx in self.net.switch.index:
+        for i, idx in enumerate(self.net.switch.index):
             switch_data = {
-                'index': idx,
-                'name': self.net.switch.name.iloc[idx] if 'name' in self.net.switch.columns else f"Switch {idx}",
-                'bus': self.net.switch.bus.iloc[idx],
-                'element': self.net.switch.element.iloc[idx],
-                'type': self.net.switch.et.iloc[idx],
-                'switch_type': self.net.switch.type.iloc[idx] if 'type' in self.net.switch.columns else 'CB',
-                'closed': self.net.switch.closed.iloc[idx],
-                'status': 'CLOSED' if self.net.switch.closed.iloc[idx] else 'OPEN'
+                'index': int(idx),
+                'name': str(self.net.switch.name.iloc[i]) if 'name' in self.net.switch.columns else f"Switch {idx}",
+                'bus': int(self.net.switch.bus.iloc[i]),
+                'element': int(self.net.switch.element.iloc[i]),
+                'type': str(self.net.switch.et.iloc[i]),
+                'switch_type': str(self.net.switch.type.iloc[i]) if 'type' in self.net.switch.columns else 'CB',
+                'closed': bool(self.net.switch.closed.iloc[i]),
+                'status': 'CLOSED' if self.net.switch.closed.iloc[i] else 'OPEN'
             }
             switch_info.append(switch_data)
         
         return switch_info
+    
+    def get_element_status_info(self):
+        """Get comprehensive status of all switchable elements"""
+        if self.net is None:
+            return {}
+        
+        element_status = {
+            'lines': {},
+            'generators': {},
+            'loads': {},
+            'switches': {},
+            'transformers': {}
+        }
+        
+        # Line status
+        if hasattr(self.net, 'line'):
+            for idx in self.net.line.index:
+                line_data = {
+                    'index': int(idx),
+                    'name': f"Line {idx}",
+                    'from_bus': int(self.net.line.from_bus.iloc[idx]),
+                    'to_bus': int(self.net.line.to_bus.iloc[idx]),
+                    'in_service': bool(self.net.line.in_service.iloc[idx]),
+                    'status': 'ON' if self.net.line.in_service.iloc[idx] else 'OFF',
+                    'length_km': float(self.net.line.length_km.iloc[idx]) if 'length_km' in self.net.line.columns else 1.0,
+                    'r_ohm_per_km': float(self.net.line.r_ohm_per_km.iloc[idx]) if 'r_ohm_per_km' in self.net.line.columns else 0.01
+                }
+                element_status['lines'][str(idx)] = line_data
+        
+        # Generator status
+        if hasattr(self.net, 'gen'):
+            for idx in self.net.gen.index:
+                gen_data = {
+                    'index': int(idx),
+                    'name': str(self.net.gen.name.iloc[idx]) if 'name' in self.net.gen.columns else f"Gen {idx}",
+                    'bus': int(self.net.gen.bus.iloc[idx]),
+                    'in_service': bool(self.net.gen.in_service.iloc[idx]),
+                    'status': 'ON' if self.net.gen.in_service.iloc[idx] else 'OFF',
+                    'p_mw': float(self.net.gen.p_mw.iloc[idx]),
+                    'vm_pu': float(self.net.gen.vm_pu.iloc[idx]) if 'vm_pu' in self.net.gen.columns else 1.0
+                }
+                element_status['generators'][str(idx)] = gen_data
+        
+        # Load status  
+        if hasattr(self.net, 'load'):
+            for idx in self.net.load.index:
+                load_data = {
+                    'index': int(idx),
+                    'name': str(self.net.load.name.iloc[idx]) if 'name' in self.net.load.columns else f"Load {idx}",
+                    'bus': int(self.net.load.bus.iloc[idx]),
+                    'in_service': bool(self.net.load.in_service.iloc[idx]),
+                    'status': 'ON' if self.net.load.in_service.iloc[idx] else 'OFF',
+                    'p_mw': float(self.net.load.p_mw.iloc[idx]),
+                    'q_mvar': float(self.net.load.q_mvar.iloc[idx])
+                }
+                element_status['loads'][str(idx)] = load_data
+        
+        # Switch status (existing functionality)  
+        switch_info = self.get_switch_info()
+        for sw in switch_info:
+            element_status['switches'][str(sw['index'])] = sw
+        
+        # Transformer status
+        if hasattr(self.net, 'trafo'):
+            for idx in self.net.trafo.index:
+                trafo_data = {
+                    'index': int(idx),
+                    'name': f"Trafo {idx}",
+                    'hv_bus': int(self.net.trafo.hv_bus.iloc[idx]),
+                    'lv_bus': int(self.net.trafo.lv_bus.iloc[idx]),
+                    'in_service': bool(self.net.trafo.in_service.iloc[idx]),
+                    'status': 'ON' if self.net.trafo.in_service.iloc[idx] else 'OFF',
+                    'sn_mva': float(self.net.trafo.sn_mva.iloc[idx]) if 'sn_mva' in self.net.trafo.columns else 100.0
+                }
+                element_status['transformers'][str(idx)] = trafo_data
+        
+        return element_status
+    
+    def switch_element(self, element_type, element_index, new_status=None):
+        """Switch an element on/off"""
+        if self.net is None:
+            return False, "No network model available"
+        
+        try:
+            if element_type == 'line':
+                if element_index not in self.net.line.index:
+                    return False, f"Line {element_index} not found"
+                
+                current_status = self.net.line.in_service.iloc[element_index]
+                new_service_status = not current_status if new_status is None else new_status
+                self.net.line.loc[element_index, 'in_service'] = new_service_status
+                
+                status_text = "ON" if new_service_status else "OFF"
+                return True, f"Line {element_index} switched {status_text}"
+                
+            elif element_type == 'generator':
+                if element_index not in self.net.gen.index:
+                    return False, f"Generator {element_index} not found"
+                
+                current_status = self.net.gen.in_service.iloc[element_index]
+                new_service_status = not current_status if new_status is None else new_status
+                self.net.gen.loc[element_index, 'in_service'] = new_service_status
+                
+                status_text = "ON" if new_service_status else "OFF"
+                return True, f"Generator {element_index} switched {status_text}"
+                
+            elif element_type == 'load':
+                if element_index not in self.net.load.index:
+                    return False, f"Load {element_index} not found"
+                
+                current_status = self.net.load.in_service.iloc[element_index]
+                new_service_status = not current_status if new_status is None else new_status
+                self.net.load.loc[element_index, 'in_service'] = new_service_status
+                
+                status_text = "ON" if new_service_status else "OFF"
+                return True, f"Load {element_index} switched {status_text}"
+                
+            elif element_type == 'transformer':
+                if hasattr(self.net, 'trafo') and element_index in self.net.trafo.index:
+                    current_status = self.net.trafo.in_service.iloc[element_index]
+                    new_service_status = not current_status if new_status is None else new_status
+                    self.net.trafo.loc[element_index, 'in_service'] = new_service_status
+                    
+                    status_text = "ON" if new_service_status else "OFF"
+                    return True, f"Transformer {element_index} switched {status_text}"
+                else:
+                    return False, f"Transformer {element_index} not found"
+                
+            elif element_type == 'switch':
+                # Use existing switch functionality
+                result = self.toggle_switch(element_index, force_state=new_status)
+                return result, f"Switch {element_index} operated"
+                
+            else:
+                return False, f"Unknown element type: {element_type}"
+                
+        except Exception as e:
+            return False, f"Error switching element: {str(e)}"
+    
+    def get_network_topology_data(self):
+        """Get network topology data for interactive visualization"""
+        if self.net is None:
+            return {}
+        
+        # Get bus positions (use existing method or create default)
+        bus_positions = {}
+        if hasattr(self, '_create_bus_positions'):
+            bus_positions = self._create_bus_positions()
+        else:
+            # Create simple circular layout
+            import math
+            count = len(self.net.bus)
+            radius = 3.0
+            for idx in self.net.bus.index:
+                angle = 2 * math.pi * idx / count
+                bus_positions[idx] = (radius * math.cos(angle), radius * math.sin(angle))
+        
+        # Build topology data
+        topology = {
+            'buses': [],
+            'lines': [],
+            'generators': [],
+            'loads': [],
+            'transformers': []
+        }
+        
+        # Bus data
+        for idx in self.net.bus.index:
+            bus_name = self.net.bus.name.iloc[idx] if 'name' in self.net.bus.columns else f"Bus {idx}"
+            x, y = bus_positions.get(idx, (0, 0))
+            
+            bus_voltage = 1.0  # Default
+            if hasattr(self.net, 'res_bus_est') and self.net.res_bus_est is not None:
+                bus_voltage = self.net.res_bus_est.vm_pu.iloc[idx]
+            elif hasattr(self.net, 'res_bus') and self.net.res_bus is not None:
+                bus_voltage = self.net.res_bus.vm_pu.iloc[idx]
+            
+            topology['buses'].append({
+                'index': idx,
+                'name': bus_name,
+                'x': x,
+                'y': y,
+                'voltage': bus_voltage,
+                'vn_kv': self.net.bus.vn_kv.iloc[idx] if 'vn_kv' in self.net.bus.columns else 20.0
+            })
+        
+        # Line data
+        for idx in self.net.line.index:
+            from_bus = self.net.line.from_bus.iloc[idx]
+            to_bus = self.net.line.to_bus.iloc[idx]
+            
+            # Get power flow if available
+            power_flow = 0.0
+            if hasattr(self.net, 'res_line') and self.net.res_line is not None:
+                power_flow = self.net.res_line.p_from_mw.iloc[idx]
+            
+            topology['lines'].append({
+                'index': idx,
+                'from_bus': from_bus,
+                'to_bus': to_bus,
+                'in_service': self.net.line.in_service.iloc[idx],
+                'power_flow': power_flow,
+                'loading_percent': self.net.res_line.loading_percent.iloc[idx] if hasattr(self.net, 'res_line') and self.net.res_line is not None else 0.0
+            })
+        
+        # Generator data
+        for idx in self.net.gen.index:
+            bus = self.net.gen.bus.iloc[idx]
+            power_output = 0.0
+            if hasattr(self.net, 'res_gen') and self.net.res_gen is not None:
+                power_output = self.net.res_gen.p_mw.iloc[idx]
+            
+            topology['generators'].append({
+                'index': idx,
+                'bus': bus,
+                'in_service': self.net.gen.in_service.iloc[idx],
+                'power_output': power_output,
+                'max_p_mw': self.net.gen.max_p_mw.iloc[idx] if 'max_p_mw' in self.net.gen.columns else self.net.gen.p_mw.iloc[idx]
+            })
+        
+        # Load data  
+        for idx in self.net.load.index:
+            bus = self.net.load.bus.iloc[idx]
+            topology['loads'].append({
+                'index': idx,
+                'bus': bus,
+                'in_service': self.net.load.in_service.iloc[idx],
+                'p_mw': self.net.load.p_mw.iloc[idx],
+                'q_mvar': self.net.load.q_mvar.iloc[idx]
+            })
+        
+        # Transformer data
+        if hasattr(self.net, 'trafo'):
+            for idx in self.net.trafo.index:
+                hv_bus = self.net.trafo.hv_bus.iloc[idx]
+                lv_bus = self.net.trafo.lv_bus.iloc[idx]
+                
+                power_flow = 0.0
+                if hasattr(self.net, 'res_trafo') and self.net.res_trafo is not None:
+                    power_flow = self.net.res_trafo.p_hv_mw.iloc[idx]
+                
+                topology['transformers'].append({
+                    'index': idx,
+                    'hv_bus': hv_bus,
+                    'lv_bus': lv_bus,
+                    'in_service': self.net.trafo.in_service.iloc[idx],
+                    'power_flow': power_flow,
+                    'loading_percent': self.net.res_trafo.loading_percent.iloc[idx] if hasattr(self.net, 'res_trafo') and self.net.res_trafo is not None else 0.0
+                })
+        
+        return topology
+    
+    def run_power_flow_analysis(self):
+        """Run power flow analysis and update results"""
+        if self.net is None:
+            return False, "No network model available"
+        
+        try:
+            # Run power flow calculation
+            pp.runpp(self.net, algorithm='nr', calculate_voltage_angles=True)
+            
+            # Update estimation results if needed
+            if self.estimation_results is None:
+                self.estimation_results = {
+                    'converged': True,
+                    'algorithm': 'power_flow',
+                    'iteration_count': 0
+                }
+            
+            return True, "Power flow analysis completed successfully"
+            
+        except Exception as e:
+            return False, f"Power flow analysis failed: {str(e)}"
     
     def check_topology_consistency(self, detailed_report=True):
         """
@@ -4487,6 +4760,7 @@ def main():
     # Show results
     print("\n5. Displaying results...")
     estimator.show_results()
+
 
 if __name__ == "__main__":
     main()

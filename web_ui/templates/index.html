@@ -271,19 +271,86 @@
       </div>
     </div>
 
-    <!-- Grid Visualization -->
+    <!-- Interactive Grid Visualization -->
     <div class="card mb-3">
       <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h5 class="card-title mb-0">Grid Visualization</h5>
-          <form method="post" action="{{ url_for('clear_output') }}">
-            <button class="btn btn-sm btn-outline-dark" type="submit">Clear Logs</button>
-          </form>
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h5 class="card-title mb-0">Interactive Grid Control</h5>
+          <div class="btn-group">
+            <button class="btn btn-sm btn-outline-primary" onclick="refreshGridDiagram()">Refresh</button>
+            <button class="btn btn-sm btn-outline-success" onclick="runStateEstimation()">Update Analysis</button>
+            <form method="post" action="{{ url_for('clear_output') }}" class="d-inline">
+              <button class="btn btn-sm btn-outline-dark" type="submit">Clear Logs</button>
+            </form>
+          </div>
         </div>
+        
+        <!-- Control Instructions -->
+        <div class="alert alert-info py-2 mb-3">
+          <small>
+            <strong>Interactive Controls:</strong> 
+            Click on <span class="badge bg-primary">buses</span> to view details • 
+            Click on <span class="badge bg-secondary">lines</span> to switch on/off • 
+            Click on <span class="badge bg-success">generators</span> and <span class="badge bg-warning">loads</span> to control • 
+            Click on <span class="badge bg-danger">switches</span> to operate
+          </small>
+        </div>
+        
+        <!-- Interactive Grid Diagram -->
+        <div id="interactive-grid-container" class="border rounded p-3" style="background: #f8f9fa; min-height: 400px;">
+          {% if grid_info %}
+            <svg id="grid-svg" width="100%" height="400" viewBox="0 0 500 400">
+              <defs>
+                <!-- Gradient definitions for visual effects -->
+                <linearGradient id="busGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" style="stop-color:#4a90e2;stop-opacity:1" />
+                  <stop offset="100%" style="stop-color:#357abd;stop-opacity:1" />
+                </linearGradient>
+                <linearGradient id="genGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" style="stop-color:#28a745;stop-opacity:1" />
+                  <stop offset="100%" style="stop-color:#1e7e34;stop-opacity:1" />
+                </linearGradient>
+                <linearGradient id="loadGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" style="stop-color:#ffc107;stop-opacity:1" />
+                  <stop offset="100%" style="stop-color:#e0a800;stop-opacity:1" />
+                </linearGradient>
+                <!-- Marker for power flow arrows -->
+                <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                  <polygon points="0 0, 10 3.5, 0 7" fill="#666" />
+                </marker>
+              </defs>
+              
+              <!-- Loading message -->
+              <text x="250" y="200" text-anchor="middle" class="text-muted">Loading interactive grid diagram...</text>
+            </svg>
+          {% else %}
+            <div class="text-center text-muted py-5">
+              <h6>Create a grid to start interactive control</h6>
+              <p class="mb-0">Use the grid controls above to create IEEE 9-bus or ENTSO-E grid systems.</p>
+            </div>
+          {% endif %}
+        </div>
+        
+        <!-- Element Status Panel -->
+        <div class="row mt-3" id="element-status-panel" style="display: none;">
+          <div class="col-md-12">
+            <div class="card border-info">
+              <div class="card-header bg-info text-white py-2">
+                <h6 class="mb-0">Element Details</h6>
+              </div>
+              <div class="card-body py-2" id="element-details">
+                <!-- Element details will be populated here -->
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Static Grid Visualization (Backup) -->
         {% if grid_plot %}
-          <img class="grid-img" src="data:image/png;base64,{{ grid_plot }}" alt="Grid plot" />
-        {% else %}
-          <div class="text-muted">Create a grid to view the plot.</div>
+        <div class="mt-3">
+          <h6>Static Grid View</h6>
+          <img class="grid-img" src="data:image/png;base64,{{ grid_plot }}" alt="Grid plot" style="max-width: 100%; height: auto;" />
+        </div>
         {% endif %}
       </div>
     </div>
@@ -494,6 +561,390 @@ function refreshMeasurements() {
     })
     .catch(error => console.log('Auto-refresh error:', error));
 }
+
+// Interactive Grid Diagram Functions
+let gridData = null;
+let selectedElement = null;
+
+function refreshGridDiagram() {
+  const svg = document.getElementById('grid-svg');
+  if (!svg) return;
+  
+  fetch('/api/grid-diagram')
+    .then(response => response.json())
+    .then(data => {
+      if (!data.error) {
+        gridData = data;
+        renderInteractiveGrid(data);
+      } else {
+        console.error('Grid diagram error:', data.error);
+      }
+    })
+    .catch(error => {
+      console.error('Failed to fetch grid diagram:', error);
+    });
+}
+
+function renderInteractiveGrid(data) {
+  const svg = document.getElementById('grid-svg');
+  svg.innerHTML = ''; // Clear existing content
+  
+  // Add defs again
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="busGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#4a90e2;stop-opacity:1" />
+        <stop offset="100%" style="stop-color:#357abd;stop-opacity:1" />
+      </linearGradient>
+      <linearGradient id="genGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#28a745;stop-opacity:1" />
+        <stop offset="100%" style="stop-color:#1e7e34;stop-opacity:1" />
+      </linearGradient>
+      <linearGradient id="loadGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#ffc107;stop-opacity:1" />
+        <stop offset="100%" style="stop-color:#e0a800;stop-opacity:1" />
+      </linearGradient>
+      <linearGradient id="offlineGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#6c757d;stop-opacity:1" />
+        <stop offset="100%" style="stop-color:#495057;stop-opacity:1" />
+      </linearGradient>
+      <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#666" />
+      </marker>
+    </defs>
+  `;
+  
+  // Draw lines first (background layer)
+  data.lines.forEach(line => {
+    const lineColor = line.in_service ? '#343a40' : '#6c757d';
+    const lineWidth = line.in_service ? 3 : 1;
+    const lineOpacity = line.in_service ? 0.8 : 0.4;
+    const dashArray = line.in_service ? 'none' : '5,5';
+    
+    const lineElement = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    lineElement.setAttribute('x1', line.from_x);
+    lineElement.setAttribute('y1', line.from_y);
+    lineElement.setAttribute('x2', line.to_x);
+    lineElement.setAttribute('y2', line.to_y);
+    lineElement.setAttribute('stroke', lineColor);
+    lineElement.setAttribute('stroke-width', lineWidth);
+    lineElement.setAttribute('stroke-opacity', lineOpacity);
+    lineElement.setAttribute('stroke-dasharray', dashArray);
+    lineElement.setAttribute('cursor', 'pointer');
+    lineElement.setAttribute('data-element-type', 'line');
+    lineElement.setAttribute('data-element-index', line.index);
+    
+    lineElement.addEventListener('click', () => handleElementClick('line', line.index, line));
+    lineElement.addEventListener('mouseover', () => showElementTooltip(lineElement, `Line ${line.index}`, line.in_service ? 'In Service' : 'Out of Service'));
+    lineElement.addEventListener('mouseout', hideTooltip);
+    
+    svg.appendChild(lineElement);
+    
+    // Add line label
+    const midX = (line.from_x + line.to_x) / 2;
+    const midY = (line.from_y + line.to_y) / 2;
+    
+    const labelElement = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    labelElement.setAttribute('x', midX);
+    labelElement.setAttribute('y', midY - 5);
+    labelElement.setAttribute('text-anchor', 'middle');
+    labelElement.setAttribute('font-size', '10');
+    labelElement.setAttribute('fill', lineColor);
+    labelElement.setAttribute('pointer-events', 'none');
+    labelElement.textContent = `L${line.index}`;
+    
+    svg.appendChild(labelElement);
+  });
+  
+  // Draw buses
+  data.buses.forEach(bus => {
+    const voltage = bus.estimated_voltage_pu || bus.voltage_pu;
+    const busColor = getVoltageColor(voltage);
+    
+    const busElement = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    busElement.setAttribute('cx', bus.x);
+    busElement.setAttribute('cy', bus.y);
+    busElement.setAttribute('r', 20);
+    busElement.setAttribute('fill', `url(#busGradient)`);
+    busElement.setAttribute('stroke', busColor);
+    busElement.setAttribute('stroke-width', 2);
+    busElement.setAttribute('cursor', 'pointer');
+    busElement.setAttribute('data-element-type', 'bus');
+    busElement.setAttribute('data-element-index', bus.index);
+    
+    busElement.addEventListener('click', () => handleElementClick('bus', bus.index, bus));
+    busElement.addEventListener('mouseover', () => showElementTooltip(busElement, bus.name, `${voltage.toFixed(3)} p.u.`));
+    busElement.addEventListener('mouseout', hideTooltip);
+    
+    svg.appendChild(busElement);
+    
+    // Bus label
+    const labelElement = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    labelElement.setAttribute('x', bus.x);
+    labelElement.setAttribute('y', bus.y + 4);
+    labelElement.setAttribute('text-anchor', 'middle');
+    labelElement.setAttribute('font-size', '11');
+    labelElement.setAttribute('font-weight', 'bold');
+    labelElement.setAttribute('fill', 'white');
+    labelElement.setAttribute('pointer-events', 'none');
+    labelElement.textContent = `${bus.index}`;
+    
+    svg.appendChild(labelElement);
+  });
+  
+  // Draw generators
+  data.generators.forEach(gen => {
+    const genColor = gen.in_service ? 'url(#genGradient)' : 'url(#offlineGradient)';
+    
+    const genElement = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    genElement.setAttribute('x', gen.x - 8);
+    genElement.setAttribute('y', gen.y - 8);
+    genElement.setAttribute('width', 16);
+    genElement.setAttribute('height', 16);
+    genElement.setAttribute('fill', genColor);
+    genElement.setAttribute('stroke', '#1e7e34');
+    genElement.setAttribute('stroke-width', 1);
+    genElement.setAttribute('cursor', 'pointer');
+    genElement.setAttribute('data-element-type', 'generator');
+    genElement.setAttribute('data-element-index', gen.index);
+    
+    genElement.addEventListener('click', () => handleElementClick('generator', gen.index, gen));
+    genElement.addEventListener('mouseover', () => showElementTooltip(genElement, gen.name, gen.in_service ? 'Online' : 'Offline'));
+    genElement.addEventListener('mouseout', hideTooltip);
+    
+    svg.appendChild(genElement);
+    
+    // Generator symbol (G)
+    const symbolElement = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    symbolElement.setAttribute('x', gen.x);
+    symbolElement.setAttribute('y', gen.y + 3);
+    symbolElement.setAttribute('text-anchor', 'middle');
+    symbolElement.setAttribute('font-size', '10');
+    symbolElement.setAttribute('font-weight', 'bold');
+    symbolElement.setAttribute('fill', 'white');
+    symbolElement.setAttribute('pointer-events', 'none');
+    symbolElement.textContent = 'G';
+    
+    svg.appendChild(symbolElement);
+  });
+  
+  // Draw loads
+  data.loads.forEach(load => {
+    const loadColor = load.in_service ? 'url(#loadGradient)' : 'url(#offlineGradient)';
+    
+    const points = `${load.x},${load.y-10} ${load.x-8},${load.y+6} ${load.x+8},${load.y+6}`;
+    
+    const loadElement = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    loadElement.setAttribute('points', points);
+    loadElement.setAttribute('fill', loadColor);
+    loadElement.setAttribute('stroke', '#e0a800');
+    loadElement.setAttribute('stroke-width', 1);
+    loadElement.setAttribute('cursor', 'pointer');
+    loadElement.setAttribute('data-element-type', 'load');
+    loadElement.setAttribute('data-element-index', load.index);
+    
+    loadElement.addEventListener('click', () => handleElementClick('load', load.index, load));
+    loadElement.addEventListener('mouseover', () => showElementTooltip(loadElement, load.name, load.in_service ? 'Connected' : 'Disconnected'));
+    loadElement.addEventListener('mouseout', hideTooltip);
+    
+    svg.appendChild(loadElement);
+    
+    // Load symbol (L)
+    const symbolElement = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    symbolElement.setAttribute('x', load.x);
+    symbolElement.setAttribute('y', load.y + 2);
+    symbolElement.setAttribute('text-anchor', 'middle');
+    symbolElement.setAttribute('font-size', '9');
+    symbolElement.setAttribute('font-weight', 'bold');
+    symbolElement.setAttribute('fill', 'white');
+    symbolElement.setAttribute('pointer-events', 'none');
+    symbolElement.textContent = 'L';
+    
+    svg.appendChild(symbolElement);
+  });
+  
+  // Draw switches
+  data.switches.forEach(sw => {
+    const switchColor = sw.closed ? '#dc3545' : '#6c757d';
+    
+    const switchElement = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    switchElement.setAttribute('cx', sw.x);
+    switchElement.setAttribute('cy', sw.y);
+    switchElement.setAttribute('r', 8);
+    switchElement.setAttribute('fill', switchColor);
+    switchElement.setAttribute('stroke', '#495057');
+    switchElement.setAttribute('stroke-width', 1);
+    switchElement.setAttribute('cursor', 'pointer');
+    switchElement.setAttribute('data-element-type', 'switch');
+    switchElement.setAttribute('data-element-index', sw.index);
+    
+    switchElement.addEventListener('click', () => handleElementClick('switch', sw.index, sw));
+    switchElement.addEventListener('mouseover', () => showElementTooltip(switchElement, sw.name, sw.status));
+    switchElement.addEventListener('mouseout', hideTooltip);
+    
+    svg.appendChild(switchElement);
+    
+    // Switch symbol (S)
+    const symbolElement = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    symbolElement.setAttribute('x', sw.x);
+    symbolElement.setAttribute('y', sw.y + 3);
+    symbolElement.setAttribute('text-anchor', 'middle');
+    symbolElement.setAttribute('font-size', '8');
+    symbolElement.setAttribute('font-weight', 'bold');
+    symbolElement.setAttribute('fill', 'white');
+    symbolElement.setAttribute('pointer-events', 'none');
+    symbolElement.textContent = 'S';
+    
+    svg.appendChild(symbolElement);
+  });
+}
+
+function getVoltageColor(voltage) {
+  // Color coding based on voltage level
+  if (voltage < 0.95) return '#dc3545'; // Low voltage - red
+  if (voltage > 1.05) return '#fd7e14'; // High voltage - orange
+  return '#28a745'; // Normal voltage - green
+}
+
+function handleElementClick(elementType, elementIndex, elementData) {
+  selectedElement = {type: elementType, index: elementIndex, data: elementData};
+  
+  if (elementType === 'bus') {
+    showElementDetails(elementData);
+  } else {
+    // For switchable elements, toggle their state
+    toggleElementState(elementType, elementIndex);
+  }
+}
+
+function toggleElementState(elementType, elementIndex) {
+  const data = {
+    element_type: elementType,
+    element_index: elementIndex
+  };
+  
+  fetch('/api/element-toggle', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data)
+  })
+  .then(response => response.json())
+  .then(result => {
+    if (result.success) {
+      // Refresh the grid diagram to show updated states
+      refreshGridDiagram();
+      showNotification(result.message, 'success');
+    } else {
+      showNotification(result.message, 'error');
+    }
+  })
+  .catch(error => {
+    console.error('Element toggle error:', error);
+    showNotification('Element operation failed', 'error');
+  });
+}
+
+function showElementDetails(elementData) {
+  const panel = document.getElementById('element-status-panel');
+  const details = document.getElementById('element-details');
+  
+  let detailsHtml = '';
+  
+  if (elementData.index !== undefined) {
+    detailsHtml += `
+      <div class="row">
+        <div class="col-md-6">
+          <strong>Element:</strong> ${elementData.name || 'Bus ' + elementData.index}<br>
+          <strong>Type:</strong> Bus<br>
+          <strong>Index:</strong> ${elementData.index}
+        </div>
+        <div class="col-md-6">
+          <strong>Voltage:</strong> ${(elementData.voltage_pu || 0).toFixed(4)} p.u.<br>
+          ${elementData.estimated_voltage_pu ? `<strong>Estimated:</strong> ${elementData.estimated_voltage_pu.toFixed(4)} p.u.<br>` : ''}
+          <strong>Status:</strong> <span class="badge bg-success">Online</span>
+        </div>
+      </div>
+    `;
+  }
+  
+  details.innerHTML = detailsHtml;
+  panel.style.display = 'block';
+  
+  // Hide after 5 seconds
+  setTimeout(() => {
+    panel.style.display = 'none';
+  }, 5000);
+}
+
+function showElementTooltip(element, title, info) {
+  const tooltip = document.createElement('div');
+  tooltip.id = 'element-tooltip';
+  tooltip.className = 'position-absolute bg-dark text-white p-2 rounded';
+  tooltip.style.cssText = 'z-index: 1000; font-size: 12px; pointer-events: none;';
+  tooltip.innerHTML = `<strong>${title}</strong><br>${info}`;
+  
+  document.body.appendChild(tooltip);
+  
+  element.addEventListener('mousemove', (e) => {
+    tooltip.style.left = e.pageX + 10 + 'px';
+    tooltip.style.top = e.pageY - 30 + 'px';
+  });
+}
+
+function hideTooltip() {
+  const tooltip = document.getElementById('element-tooltip');
+  if (tooltip) {
+    tooltip.remove();
+  }
+}
+
+function showNotification(message, type = 'info') {
+  const alertClass = type === 'success' ? 'alert-success' : type === 'error' ? 'alert-danger' : 'alert-info';
+  const notification = document.createElement('div');
+  notification.className = `alert ${alertClass} position-fixed`;
+  notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
+  notification.innerHTML = `
+    ${message}
+    <button type="button" class="btn-close" onclick="this.parentElement.remove()"></button>
+  `;
+  
+  document.body.appendChild(notification);
+  
+  // Auto-remove after 3 seconds
+  setTimeout(() => {
+    if (notification.parentElement) {
+      notification.remove();
+    }
+  }, 3000);
+}
+
+function runStateEstimation() {
+  fetch('/state-estimation', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    }
+  })
+  .then(() => {
+    // Refresh the grid diagram to show updated estimation results
+    refreshGridDiagram();
+    showNotification('State estimation completed', 'success');
+  })
+  .catch(error => {
+    console.error('State estimation error:', error);
+    showNotification('State estimation failed', 'error');
+  });
+}
+
+// Initialize interactive grid when page loads
+document.addEventListener('DOMContentLoaded', function() {
+  // Load grid diagram if grid exists
+  if (document.getElementById('grid-svg')) {
+    refreshGridDiagram();
+  }
+});
 
 // Auto-refresh every 30 seconds (optional)
 // setInterval(refreshMeasurements, 30000);

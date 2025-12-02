@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from grid_state_estimator import GridStateEstimator
+from substation_analyzer import SubstationAnalyzer
 
 
 @dataclass
@@ -73,6 +74,12 @@ def index():
         pseudomeasurement_status=state.pseudomeasurement_status,
         measurement_filter=state.measurement_filter,
     )
+
+
+@app.route("/substation-diagram")
+def substation_diagram():
+    """Advanced substation visualization page"""
+    return render_template("substation_diagram.html")
 
 
 @app.post("/create-grid")
@@ -476,6 +483,69 @@ def api_pseudomeasurement_status():
         return jsonify({"error": str(exc)})
 
 
+@app.route("/api/grid-diagram")
+def api_grid_diagram():
+    """API endpoint for interactive grid diagram data"""
+    if not state.estimator:
+        return jsonify({"error": "No grid model available"})
+    
+    try:
+        diagram_data = generate_interactive_grid_data()
+        return jsonify(diagram_data)
+    except Exception as exc:
+        return jsonify({"error": str(exc)})
+
+
+@app.route("/api/element-status")
+def api_element_status():
+    """API endpoint for all element status information"""
+    if not state.estimator:
+        return jsonify({"error": "No grid model available"})
+    
+    try:
+        status_info = state.estimator.get_element_status_info()
+        return jsonify(status_info)
+    except Exception as exc:
+        return jsonify({"error": str(exc)})
+
+
+@app.post("/api/element-toggle")
+def api_element_toggle():
+    """API endpoint for toggling element states"""
+    if not state.estimator:
+        return jsonify({"error": "No grid model available", "success": False})
+    
+    try:
+        data = request.get_json()
+        element_type = data.get('element_type')
+        element_index = int(data.get('element_index'))
+        new_status = data.get('new_status')  # Can be None for toggle
+        
+        if element_type == 'switch':
+            success = state.estimator.toggle_switch(element_index, force_state=new_status)
+            message = f"Switch {element_index} {'operated successfully' if success else 'operation failed'}"
+        else:
+            success, message = state.estimator.switch_element(element_type, element_index, new_status)
+        
+        if success:
+            state.log(f"✅ {message}")
+            # Get updated status
+            updated_status = state.estimator.get_element_status_info()
+            return jsonify({
+                "success": True, 
+                "message": message,
+                "updated_status": updated_status
+            })
+        else:
+            state.log(f"❌ {message}")
+            return jsonify({"success": False, "message": message})
+            
+    except Exception as exc:
+        error_msg = f"Element operation failed: {exc}"
+        state.log(f"❌ {error_msg}")
+        return jsonify({"success": False, "message": error_msg})
+
+
 def ensure_grid() -> bool:
     if state.estimator is None:
         flash("Please create a grid first", "warning")
@@ -531,9 +601,9 @@ def get_measurement_comparison_data():
     comparison = []
 
     # Voltage magnitudes
-    for bus_idx in net.bus.index:
-        true_value = net.res_bus.vm_pu.iloc[bus_idx]
-        estimated_value = net.res_bus_est.vm_pu.iloc[bus_idx]
+    for i, bus_idx in enumerate(net.bus.index):
+        true_value = net.res_bus.vm_pu.iloc[i]
+        estimated_value = net.res_bus_est.vm_pu.iloc[i] if hasattr(net, 'res_bus_est') else true_value
         v_meas = net.measurement[
             (net.measurement.element == bus_idx)
             & (net.measurement.measurement_type == "v")
@@ -557,7 +627,7 @@ def get_measurement_comparison_data():
 
     # Power flows
     line_has_estimates = hasattr(net, "res_line_est") and net.res_line_est is not None
-    for line_idx in net.line.index:
+    for i, line_idx in enumerate(net.line.index):
         from_bus = net.line.from_bus.iloc[line_idx]
         to_bus = net.line.to_bus.iloc[line_idx]
 
@@ -573,10 +643,10 @@ def get_measurement_comparison_data():
             if measurement_row.empty:
                 continue
 
-            true_value = net.res_line[res_column].iloc[line_idx]
+            true_value = net.res_line[res_column].iloc[i]
             measured_value = measurement_row["value"].iloc[0]
             est_value = (
-                net.res_line_est[res_column].iloc[line_idx]
+                net.res_line_est[res_column].iloc[i]
                 if line_has_estimates
                 else true_value
             )
@@ -768,5 +838,183 @@ def generate_grid_plot():
     return base64.b64encode(buffer.read()).decode("utf-8")
 
 
+def generate_interactive_grid_data():
+    """Generate data for interactive grid diagram"""
+    if not state.estimator or state.estimator.net is None:
+        return {"error": "No grid model available"}
+
+    net = state.estimator.net
+    
+    # Get bus positions
+    positions = {}
+    if hasattr(state.estimator, "_create_bus_positions"):
+        positions = state.estimator._create_bus_positions()
+
+    if len(positions) < len(net.bus):
+        # Fallback to circular layout
+        count = len(net.bus)
+        radius = 200  # SVG coordinates
+        for idx in net.bus.index:
+            angle = 2 * math.pi * idx / count
+            positions[idx] = (250 + radius * math.cos(angle), 250 + radius * math.sin(angle))
+    else:
+        # Scale existing positions for SVG (assuming they're in a smaller coordinate system)
+        scale_factor = 100
+        offset_x, offset_y = 250, 250
+        scaled_positions = {}
+        for bus_idx, (x, y) in positions.items():
+            scaled_positions[bus_idx] = (offset_x + x * scale_factor, offset_y + y * scale_factor)
+        positions = scaled_positions
+
+    # Get current element status
+    element_status = state.estimator.get_element_status_info()
+    switch_info = state.estimator.get_switch_info()
+    
+    # Get estimation results for coloring
+    has_estimation = state.estimator.estimation_results is not None
+    
+    # Build bus data
+    buses = []
+    for i, bus_idx in enumerate(net.bus.index):
+        x, y = positions[bus_idx]
+        bus_data = {
+            "index": int(bus_idx),
+            "name": str(net.bus.name.iloc[i]) if "name" in net.bus.columns else f"Bus {bus_idx}",
+            "x": float(x),
+            "y": float(y),
+            "voltage_pu": float(net.res_bus.vm_pu.iloc[i]) if hasattr(net, 'res_bus') else 1.0
+        }
+        
+        if has_estimation:
+            bus_data["estimated_voltage_pu"] = float(net.res_bus_est.vm_pu.iloc[i])
+            
+        buses.append(bus_data)
+    
+    # Build line data
+    lines = []
+    for i, line_idx in enumerate(net.line.index):
+        from_bus = int(net.line.from_bus.iloc[i])
+        to_bus = int(net.line.to_bus.iloc[i])
+        
+        # Check if line is in service
+        line_in_service = element_status.get('lines', {}).get(str(line_idx), {}).get('in_service', True)
+        
+        line_data = {
+            "index": int(line_idx),
+            "name": f"Line {line_idx}",
+            "from_bus": int(from_bus),
+            "to_bus": int(to_bus),
+            "from_x": float(positions[from_bus][0]),
+            "from_y": float(positions[from_bus][1]),
+            "to_x": float(positions[to_bus][0]),
+            "to_y": float(positions[to_bus][1]),
+            "in_service": bool(line_in_service),
+            "can_switch": True  # Lines can be switched on/off
+        }
+        
+        # Add power flow data if available
+        if hasattr(net, 'res_line'):
+            line_data["p_from_mw"] = float(net.res_line.p_from_mw.iloc[i])
+            line_data["p_to_mw"] = float(net.res_line.p_to_mw.iloc[i])
+            line_data["loading_percent"] = float(net.res_line.loading_percent.iloc[i])
+            
+        lines.append(line_data)
+    
+    # Build switch data
+    switches = []
+    for sw in switch_info:
+        switch_data = {
+            "index": int(sw["index"]),
+            "name": str(sw["name"]),
+            "bus": int(sw["bus"]),
+            "element": int(sw["element"]),
+            "closed": bool(sw["closed"]),
+            "status": str(sw["status"]),
+            "switch_type": str(sw.get("switch_type", "CB"))
+        }
+        
+        # Add position based on connected bus
+        if sw["bus"] in positions:
+            x, y = positions[sw["bus"]]
+            switch_data["x"] = float(x + 25)  # Offset from bus position
+            switch_data["y"] = float(y + 25)
+        
+        switches.append(switch_data)
+    
+    # Build generator data
+    generators = []
+    if hasattr(net, 'gen') and len(net.gen) > 0:
+        for i, gen_idx in enumerate(net.gen.index):
+            bus_idx = int(net.gen.bus.iloc[i])
+            gen_in_service = element_status.get('generators', {}).get(str(gen_idx), {}).get('in_service', True)
+            
+            gen_data = {
+                "index": int(gen_idx),
+                "name": f"Gen {gen_idx}",
+                "bus": int(bus_idx),
+                "in_service": bool(gen_in_service),
+                "can_switch": True
+            }
+            
+            if bus_idx in positions:
+                x, y = positions[bus_idx]
+                gen_data["x"] = float(x - 30)  # Offset from bus
+                gen_data["y"] = float(y - 30)
+                
+            # Add generation data if available
+            if hasattr(net, 'res_gen'):
+                gen_data["p_mw"] = float(net.res_gen.p_mw.iloc[i])
+                gen_data["q_mvar"] = float(net.res_gen.q_mvar.iloc[i])
+                
+            generators.append(gen_data)
+    
+    # Build load data
+    loads = []
+    if hasattr(net, 'load') and len(net.load) > 0:
+        for i, load_idx in enumerate(net.load.index):
+            bus_idx = int(net.load.bus.iloc[i])
+            load_in_service = element_status.get('loads', {}).get(str(load_idx), {}).get('in_service', True)
+            
+            load_data = {
+                "index": int(load_idx),
+                "name": f"Load {load_idx}",
+                "bus": int(bus_idx),
+                "in_service": bool(load_in_service),
+                "can_switch": True,
+                "p_mw": float(net.load.p_mw.iloc[i]),
+                "q_mvar": float(net.load.q_mvar.iloc[i])
+            }
+            
+            if bus_idx in positions:
+                x, y = positions[bus_idx]
+                load_data["x"] = float(x + 30)  # Offset from bus
+                load_data["y"] = float(y + 30)
+                
+            loads.append(load_data)
+    
+    return {
+        "buses": buses,
+        "lines": lines,
+        "switches": switches,
+        "generators": generators,
+        "loads": loads,
+        "has_estimation": has_estimation,
+        "grid_type": state.current_grid or "Unknown"
+    }
+
+
+@app.route("/api/substation-analysis")
+def api_substation_analysis():
+    """API endpoint for comprehensive substation analysis"""
+    if not state.estimator:
+        return jsonify({"error": "No grid model available"})
+    
+    try:
+        analysis = state.estimator.get_substation_analysis()
+        return jsonify(analysis)
+    except Exception as exc:
+        return jsonify({"error": str(exc)})
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    app.run(host="0.0.0.0", port=8001, debug=True)
